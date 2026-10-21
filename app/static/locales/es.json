@@ -183,7 +183,7 @@
   "errors.auth": "Inicia sesión para ver tus finanzas.",
   "errors.origin": "Origen no permitido.",
   "errors.rateLimit": "Demasiados intentos. Espera cinco minutos.",
-  "errors.credentials": "Usuario o contraseña incorrectos.",
+  "errors.credentials": "Credenciales o código de verificación incorrectos.",
   "errors.invalidDate": "Fecha no válida.",
   "errors.dateRange": "La fecha inicial debe ser anterior a la final.",
   "errors.amountRange": "El importe mínimo debe ser menor o igual al máximo.",
@@ -255,5 +255,8 @@
   "fields.frequency": "Frecuencia",
   "common.yes": "Sí",
   "common.no": "No",
-  "metrics.points": "{value} pp"
+  "metrics.points": "{value} pp",
+  "login.code": "Código del autenticador o de recuperación",
+  "login.codeHelp": "Introduce los 6 dígitos de tu autenticador o un código de recuperación sin usar. La contraseña siempre es necesaria.",
+  "errors.authState": "La autenticación no está disponible temporalmente. Contacta con quien administra el servidor."
 }

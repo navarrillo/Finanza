@@ -55,6 +55,9 @@ def test_setup_unique_credentials_and_preserves_existing_files(tmp_path, capsys)
     assert len(a["APP_PASSWORD"]) >= 24
     assert len(a["SESSION_SECRET"]) >= 32
     assert a["DEMO_MODE"] == "false"
+    assert a["MFA_REQUIRED"] == "true"
+    assert a["AUTH_DB_PATH"] == "./private/auth/auth.db"
+    assert (first / "private/auth").is_dir()
     if os.name == "posix":
         assert stat.S_IMODE((first / ".env").stat().st_mode) == 0o600
     output = capsys.readouterr().out
@@ -69,6 +72,7 @@ def test_setup_demo_and_no_sensitive_data_in_validation_output(tmp_path):
     setup(tmp_path, demo=True)
     path = tmp_path / "data/demo.db"
     assert read_env(tmp_path / ".env")["DEMO_MODE"] == "true"
+    assert read_env(tmp_path / ".env")["MFA_REQUIRED"] == "false"
     con = sqlite3.connect(path)
     con.execute(
         "UPDATE transactions SET description='PRIVATE-DESCRIPTION-MARKER',counterparty='PRIVATE-NAME-MARKER' WHERE id=1"

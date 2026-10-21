@@ -29,6 +29,7 @@ def setup(root=ROOT, demo=False):
     else:
         print(f"Kept existing database: data/{filename}")
     env_path = root / ".env"
+    (root / "private" / "auth").mkdir(parents=True, exist_ok=True, mode=0o700)
     # O_EXCL avoids clobbering credentials; restrictive permissions from creation.
     try:
         fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -43,9 +44,13 @@ def setup(root=ROOT, demo=False):
                 f"COOKIE_SECURE=false\nDB_PATH=./data/{filename}\n"
                 f"DB_DIRECTORY=./data\nDB_FILENAME={filename}\n"
                 f"DEMO_MODE={'true' if demo else 'false'}\n"
+                f"MFA_REQUIRED={'false' if demo else 'true'}\n"
+                "AUTH_DB_PATH=./private/auth/auth.db\nAUTH_DIRECTORY=./private/auth\n"
             )
         print("Created .env with unique credentials (owner read/write only).")
     print("Read APP_USER and APP_PASSWORD in your local .env to sign in.")
+    if not demo:
+        print("Before starting: install requirements and run python3 scripts/manage_auth.py setup")
     print("Next: docker compose up -d --build")
     print("For deployment over HTTPS, set COOKIE_SECURE=true and PUBLIC_ORIGIN.")
 

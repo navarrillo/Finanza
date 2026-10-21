@@ -69,6 +69,13 @@
               autocomplete="current-password"
               required
           /></label>
+          <label id="mfa-field">
+            <span data-i18n="login.code"></span>
+            <input id="auth-code" type="text" autocomplete="one-time-code"
+              autocapitalize="characters" spellcheck="false" maxlength="64"
+              aria-describedby="mfa-help" required />
+          </label>
+          <small id="mfa-help" data-i18n="login.codeHelp"></small>
           <p id="login-error" class="form-error" role="alert"></p>
           <button class="button primary" type="submit">
             <span data-i18n="login.submit"></span><span>↗</span></button
