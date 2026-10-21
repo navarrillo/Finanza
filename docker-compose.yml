@@ -12,7 +12,10 @@ services:
       DEMO_MODE: ${DEMO_MODE:-false}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      # Use the private proxy IP here if Caddy is in another container.
+      # Uvicorn --proxy-headers trusts X-Forwarded-For only from this address:
+      # the reverse proxy, as the app sees the connection. Never "*".
+      # The default trusts loopback only. A proxy that connects from another
+      # address must be set here; do not list visitor addresses.
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     volumes:
       # Mount the DIRECTORY: atomic file replacements become visible, WAL companions too.
