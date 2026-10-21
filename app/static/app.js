@@ -152,6 +152,7 @@ const noData = (
   `<div class="empty-state"><div class="empty-icon">${icon(i)}</div><h3>${esc(title)}</h3><p>${esc(text)}</p><small>${tx("common.emptyFoot")}</small></div>`;
 let currentError = null;
 let loginError = null;
+let sessionTimer = null;
 let dashboardFailed = false;
 const errorMessage = (error) =>
   error?.error_key
@@ -167,13 +168,27 @@ async function api(url, options = {}) {
   if (!r.ok) {
     if (r.status === 401 && !url.endsWith("/login")) showLogin();
     const error = new Error(data.detail);
+    error.status = r.status;
     error.error_key = data.error_key || "errors.request";
     error.params = data.params || {};
     throw error;
   }
+  if (url.startsWith("/api/") && !url.endsWith("/logout") && !url.startsWith("/api/auth/")) {
+    clearTimeout(sessionTimer);
+    // Clear visible financial data when server inactivity would expire the session.
+    sessionTimer = setTimeout(showLogin, 15 * 60 * 1000);
+  }
   return data;
 }
 function showLogin() {
+  clearTimeout(sessionTimer);
+  sessionTimer = null;
+  ++loadNumber;
+  state.data = null;
+  $("#content").innerHTML = "";
+  $("#password").value = "";
+  $("#auth-code").value = "";
+  $("#refresh").disabled = false;
   $("#login").hidden = false;
   $("#shell").hidden = true;
 }
@@ -677,6 +692,7 @@ $("#login-form").onsubmit = async (e) => {
       body: JSON.stringify({
         username: $("#username").value,
         password: $("#password").value,
+        code: $("#auth-code").value.trim(),
       }),
     });
     $("#password").value = "";
@@ -686,6 +702,8 @@ $("#login-form").onsubmit = async (e) => {
     loginError = error;
     $("#login-error").textContent = errorMessage(error);
   } finally {
+    $("#password").value = "";
+    $("#auth-code").value = "";
     button.disabled = false;
   }
 };
@@ -781,11 +799,19 @@ document.querySelectorAll("[data-language]").forEach((select) => {
       ? location.hash.slice(1)
       : "resumen";
     try {
+      const policy = await api("/api/auth/config");
+      $("#mfa-field").hidden = !policy.mfa_required;
+      $("#mfa-help").hidden = !policy.mfa_required;
+      $("#auth-code").required = policy.mfa_required;
       await api("/api/session");
       showShell();
       await load();
-    } catch {
+    } catch (error) {
       showLogin();
+      if (error.status !== 401) {
+        loginError = error;
+        $("#login-error").textContent = errorMessage(error);
+      }
     }
   } catch {
     // The entire app is local; missing locale assets indicate a broken deployment.

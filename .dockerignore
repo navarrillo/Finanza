@@ -12,6 +12,7 @@ imports
 exports
 backups
 private
+auth
 dist
 *.[dD][bB]
 *.[dD][bB]-*
