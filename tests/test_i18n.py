@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, attempts
+from app.main import app, attempts, global_attempts, revoked
 from scripts.create_demo import create_demo
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,9 +81,15 @@ def localized_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(database))
     monkeypatch.setenv("APP_USER", "admin")
     monkeypatch.setenv("APP_PASSWORD", "private-local-test-2026")
-    monkeypatch.setenv("SESSION_SECRET", "a" * 64)
+    monkeypatch.setenv(
+        "SESSION_SECRET",
+        "7c1e9a4b2f083d56e1a7c4b90f2d8e35a6c1b4e7f092d3a8c5e1b6f4a7d0c293",
+    )
     monkeypatch.setenv("COOKIE_SECURE", "false")
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
     attempts.clear()
+    global_attempts.clear()
+    revoked.clear()
     with TestClient(app) as client:
         yield client, database
 

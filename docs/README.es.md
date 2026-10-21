@@ -50,13 +50,13 @@ python scripts/create_demo.py
 cp .env.example .env
 ```
 
-Edita `.env` y establece tus credenciales. El usuario predeterminado es `admin` y la contraseña debe tener al menos 12 caracteres. Genera un secreto independiente con:
+Edita `.env` y establece tus credenciales, o ejecuta `python3 scripts/setup.py --demo` para generarlas. El usuario predeterminado es `admin`. La aplicación no arranca si `APP_PASSWORD` o `SESSION_SECRET` está vacío, es demasiado corto (12 y 32 caracteres), tiene poca entropía o es un ejemplo de esta documentación. Para elegirlos a mano:
 
 ```bash
 python -c 'import secrets; print(secrets.token_hex(32))'
 ```
 
-Copia el resultado en `SESSION_SECRET`. Para probar los datos ficticios:
+Copia el resultado en `SESSION_SECRET`. El bloque siguiente muestra la forma del archivo para los datos ficticios. Los dos secretos son marcadores y la aplicación los rechaza:
 
 ```dotenv
 APP_USER=admin
@@ -75,10 +75,10 @@ Carga las variables y arranca (Uvicorn no lee `.env` por sí solo):
 set -a
 source .env
 set +a
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log --no-server-header
 ```
 
-Abre [el dashboard local](http://127.0.0.1:8000). La sesión dura ocho horas. El botón de salida elimina la cookie; el de actualización vuelve a leer SQLite sin caché. Las credenciales se configuran en el servidor; la interfaz no permite cambiarlas ni registrarse.
+Abre [el dashboard local](http://127.0.0.1:8000). La sesión dura ocho horas. Cerrar sesión revoca el token en el servidor y borra la cookie. Esa lista de revocación está en la memoria del proceso y se olvida al reiniciar; cambiar `APP_PASSWORD` invalida todas las sesiones al momento, también después de un reinicio. El botón de actualización vuelve a leer SQLite sin caché. Las credenciales se configuran en el servidor; la interfaz no permite cambiarlas ni registrarse.
 
 Cada instalación debe generar credenciales propias; no hay una contraseña de demo compartida. Ejecuta `python3 scripts/setup.py --demo` para crear los datos ficticios y un `.env` privado con credenciales aleatorias, sin sobrescribir archivos existentes. Para otra base ficticia utiliza `scripts/create_demo.py --output /ruta/nueva.db`.
 
@@ -124,6 +124,8 @@ DB_FILENAME=finanzas.db
 DEMO_MODE=false
 ```
 
+Los dos secretos del ejemplo son marcadores. Hay que sustituirlos (por ejemplo con `python3 scripts/setup.py`) antes de arrancar. Si una instalación ya los copió, al cambiarlos hay que volver a iniciar sesión: la clave de firma incluye la contraseña.
+
 `DB_PATH` se fija **dentro del contenedor** a `/data/${DB_FILENAME}`. Para local se utiliza el `DB_PATH` de tu entorno. Asegúrate de que el directorio ya existe y de que el UID/GID `10001:10001` puede atravesarlo y leer la base. Concede solo lectura mediante grupo o ACL; evita permisos globales innecesarios. La herramienta importadora conserva sus propios permisos de escritura fuera del contenedor.
 
 ```bash
@@ -144,9 +146,15 @@ finanzas.tudominio.com {
 }
 ```
 
-El dominio debe apuntar al servidor para que Caddy gestione HTTPS. La autenticación propia permanece activa además de la del proxy. `COOKIE_SECURE=true` requiere HTTPS; usa `false` únicamente para la demo por HTTP en localhost. `PUBLIC_ORIGIN` debe coincidir exactamente con el origen HTTPS del navegador para validar login/logout detrás del proxy, independientemente de las cabeceras reenviadas. Puedes configurar `FORWARDED_ALLOW_IPS` con la IP privada real del proxy si necesitas que Uvicorn reconozca sus cabeceras; no se confía en cualquier IP por defecto.
+El dominio debe apuntar al servidor para que el proxy gestione HTTPS. La autenticación propia permanece activa. `COOKIE_SECURE=true` requiere HTTPS; usa `false` únicamente para HTTP local. `PUBLIC_ORIGIN` debe coincidir exactamente con el origen del navegador (esquema y host, sin ruta) para validar login y logout detrás del proxy. La imagen arranca Uvicorn con `--proxy-headers` y `--no-server-header`.
 
-Si Caddy corre en **otro contenedor**, `127.0.0.1` es ese propio contenedor. Conecta ambos a una red privada de Docker y usa `reverse_proxy finanzas:8000`; elimina `ports` si no necesitas el acceso desde el host. Conserva `PUBLIC_ORIGIN`. El límite de intentos es por IP vista por la app (o por proxy cuando este no se marca como confiable); está en memoria, para este despliegue con un solo proceso.
+`FORWARDED_ALLOW_IPS` es la dirección desde la que el proxy se conecta a la app. No uses `*` ni una red que contenga todas las direcciones: Uvicorn aceptaría un `X-Forwarded-For` elegido por el cliente. Solo reescribe la dirección del cliente si el par TCP está en esa lista, y se queda con la dirección no confiable más cercana del encabezado, así que un prefijo enviado por el navegador no sustituye al cliente que vio el proxy. Cualquier otra conexión conserva su propia dirección, y falsificar `X-Forwarded-For` no abre otro cubo de intentos. El valor por defecto de Compose solo confía en loopback. Con el proxy en el host y la app en Docker, la conexión llega desde la dirección del puente que ve el contenedor, no desde loopback: configura esa dirección. Incluye el proxy, no las direcciones de los visitantes. Los intentos fallidos se limitan por dirección (8 cada cinco minutos) y con un tope global en la misma ventana (30, en memoria, un solo proceso). Rotar direcciones no elimina el tope.
+
+Si el proxy corre en **otro contenedor**, loopback es ese contenedor. Conecta ambos a una red de Docker y usa `reverse_proxy finanzas:8000`; elimina `ports` si el host no necesita acceso. Conserva `PUBLIC_ORIGIN`.
+
+Cerrar sesión revoca el token hasta su caducidad. La revocación vive en la memoria del proceso y se olvida al reiniciar; la cookie se borra igualmente. Cambiar `APP_PASSWORD` invalida todas las sesiones de inmediato.
+
+Las respuestas incluyen `Permissions-Policy`, `Cross-Origin-Opener-Policy` y `Cross-Origin-Resource-Policy`. `Strict-Transport-Security: max-age=31536000` solo se envía con `COOKIE_SECURE=true`, así el HTTP local no cambia, y no incluye `includeSubDomains`. Un proxy como Caddy reenvía estas cabeceras y no añade HSTS salvo que lo configures. Deja cada política en la app, o sustituye ese campo en el proxy por un único valor. Añadir un segundo `Strict-Transport-Security` (la forma `+` de Caddy) deja dos políticas y el navegador aplica una. El proxy puede seguir enviando su propia cabecera `Server`; `--no-server-header` solo quita la de Uvicorn.
 
 ### Actualización mensual y WAL
 
@@ -171,7 +179,7 @@ En bases WAL, el lector de solo lectura puede necesitar los archivos `finanzas.d
 
 ### Privacidad
 
-No hay analítica, píxeles, CDN, fuentes remotas ni consultas de tipos de cambio por red. Las únicas peticiones del navegador son al propio servidor. Instalar dependencias y construir Docker requiere acceso al registro de paquetes; ejecutar la app no. `healthz` es público y no consulta datos financieros. API y exportación requieren sesión. Las respuestas usan `Cache-Control: no-store`, CSP y protección contra inclusión en iframes. No se configura CORS. La cookie es HttpOnly y SameSite Strict; el login compara hashes de longitud fija y limita intentos. No se activa el registro de accesos de Uvicorn.
+No hay analítica, píxeles, CDN, fuentes remotas ni consultas de tipos de cambio por red. Las únicas peticiones del navegador son al propio servidor. Instalar dependencias y construir Docker requiere acceso al registro de paquetes; ejecutar la app no. `healthz` es público y no consulta datos financieros. API y exportación requieren sesión. Las respuestas usan `Cache-Control: no-store`, CSP, `Permissions-Policy`, COOP, CORP y protección contra inclusión en iframes. HSTS solo acompaña a `COOKIE_SECURE=true`. No se configura CORS. La cookie es HttpOnly y SameSite Strict; el login compara hashes de longitud fija, limita intentos por dirección y con un tope global, y cerrar sesión revoca el token. No se activa el registro de accesos de Uvicorn.
 
 ## Pruebas
 

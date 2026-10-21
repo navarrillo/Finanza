@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.analytics import dashboard, months_ending
 from app.db import DataError, FX, connect
-from app.main import app, attempts
+from app.main import app, attempts, global_attempts, revoked
 from scripts.create_demo import create_demo
 
 
@@ -18,10 +18,16 @@ def db(tmp_path, monkeypatch):
     create_demo(p)
     monkeypatch.setenv("DB_PATH", str(p))
     monkeypatch.setenv("APP_PASSWORD", "prueba-local-segura-2026")
-    monkeypatch.setenv("SESSION_SECRET", "a" * 64)
+    monkeypatch.setenv(
+        "SESSION_SECRET",
+        "7c1e9a4b2f083d56e1a7c4b90f2d8e35a6c1b4e7f092d3a8c5e1b6f4a7d0c293",
+    )
     monkeypatch.setenv("COOKIE_SECURE", "false")
     monkeypatch.setenv("APP_USER", "admin")
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
     attempts.clear()
+    global_attempts.clear()
+    revoked.clear()
     return p
 
 

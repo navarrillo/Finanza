@@ -31,7 +31,7 @@ python3 scripts/setup.py --demo
 set -a
 source .env
 set +a
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log --no-server-header
 ```
 
 ## Languages
@@ -105,7 +105,13 @@ PUBLIC_ORIGIN=https://finanza.example.com
 DEMO_MODE=false
 ```
 
-Generate secret values with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`; do not use the example text as a credential. Protect `.env` with `chmod 600 .env`.
+The `APP_PASSWORD` and `SESSION_SECRET` lines above are placeholders. The app refuses to start if either value is empty, shorter than its minimum (12 and 32 characters), low-entropy, or copied from this documentation. `python3 scripts/setup.py` writes a private `.env`. To choose the values yourself:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+An install that already used a placeholder has to replace it and recreate the process. Sessions from before this change stop working: the signing key includes the password, so changing `APP_PASSWORD` or `SESSION_SECRET` invalidates every session. Protect `.env` with `chmod 600 .env`.
 
 ```bash
 docker compose config --quiet
@@ -123,11 +129,17 @@ finanza.example.com {
 }
 ```
 
-Point your domain to the server; Caddy handles HTTPS. Keep the app login enabled. Set `PUBLIC_ORIGIN` to the exact browser origin so login/logout checks work behind the proxy. `COOKIE_SECURE=false` is for local HTTP only. If Caddy runs in another container, use a shared private Docker network and `reverse_proxy finanzas:8000` instead of its own loopback; remove the host port mapping if unnecessary.
+Point the proxy at your domain and terminate HTTPS there. Keep the app login enabled. Set `PUBLIC_ORIGIN` to the exact browser origin (scheme and host, no path) so login and logout checks work behind the proxy. `COOKIE_SECURE=false` is for local HTTP only. Any reverse proxy works the same way: forward to the app, and publish the app port only where that proxy connects. If the proxy runs in another container, put both on one Docker network and use `reverse_proxy finanzas:8000`; drop the host port mapping when the host does not need it.
+
+The image starts Uvicorn with `--proxy-headers` and `--no-server-header`. Set `FORWARDED_ALLOW_IPS` to the address from which the proxy connects to the app. Never set `*`, and never a network that contains every address: Uvicorn would then trust a client-supplied `X-Forwarded-For`. It rewrites the client address only for a listed peer, and it keeps the nearest untrusted address in that header, so a prefix the browser added does not replace the client the proxy observed. Any other connection keeps its own peer address, and a forged `X-Forwarded-For` does not open a new login bucket. The Compose default trusts loopback only. When the proxy is on the host and the app is in Docker, the connection comes from the bridge address the container sees, not from loopback, so set that address. List the proxy, not visitor addresses. Failed logins are limited per client address (8 per five minutes) and by a global cap in the same window (30, in memory, this process). Rotating addresses does not remove the cap.
+
+Signing out revokes that session until it would have expired. Revocation is kept in process memory and is forgotten on restart; the cookie is still cleared. Changing `APP_PASSWORD` invalidates every session immediately, including after a restart.
+
+Responses include `Permissions-Policy`, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy`. `Strict-Transport-Security: max-age=31536000` is sent only when `COOKIE_SECURE=true`, so local HTTP is unchanged. The value does not include `includeSubDomains`. A proxy such as Caddy forwards these headers and does not add HSTS unless you configure it. Leave each policy to the app, or replace that one field at the proxy. Appending a second `Strict-Transport-Security` (Caddy's `+` header form) leaves two policies, and a browser applies one of them. The proxy may still send its own `Server` header. The app's `--no-server-header` only removes Uvicorn's.
 
 The app opens a new `mode=ro` connection per request, enables `query_only`, and reads a consistent transaction. It never performs a migration, checkpoint or import. For a changing WAL database, the importer must publish a consistent copy or ensure existing readable WAL/SHM files are available. Do not copy a live `.db` alone with pending WAL changes or mark a changing database `immutable`. See the [detailed deployment guide](docs/README.es.md#actualización-mensual-y-wal).
 
-Runtime requests stay on your own origin; package installation and image building need registry access. Login uses an eight-hour signed HttpOnly/SameSite cookie and an in-memory attempt limit. Put public deployments behind HTTPS and your reverse proxy's access controls.
+Runtime requests stay on your own origin; package installation and image building need registry access. Login uses an eight-hour signed HttpOnly/SameSite cookie. Put public deployments behind HTTPS.
 
 ## Publishing and contributing
 
@@ -169,6 +181,6 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Tests cover read-only database access, unchanged file hashes, login, daily/inverse/weekend FX, view reconciliation, split counts, reimbursements, one-offs, investment returns, joint separation, filters, CSV and empty/future tables. Setup/validation tests use temporary files. Translation checks cover key/placeholder parity and API errors; optional dependency-free JavaScript tests also check browser detection, saved preferences, plurals, fallback, races and locale formatting when Node.js is available (Node.js is not needed to run the app). Docker configuration has been validated; the image has not been built/run in the development environment because no Docker daemon was available there. Validate it on your target host before deployment.
+Tests cover read-only database access, unchanged file hashes, login, session revocation, login limits behind a trusted proxy, security headers, daily/inverse/weekend FX, view reconciliation, split counts, reimbursements, one-offs, investment returns, joint separation, filters, CSV and empty/future tables. Setup/validation tests use temporary files. Translation checks cover key/placeholder parity and API errors; optional dependency-free JavaScript tests also check browser detection, saved preferences, plurals, fallback, races and locale formatting when Node.js is available (Node.js is not needed to run the app). Docker configuration has been validated; the image has not been built/run in the development environment because no Docker daemon was available there. Validate it on your target host before deployment.
 
 Licensed under [MIT](LICENSE).
