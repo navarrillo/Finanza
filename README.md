@@ -61,6 +61,23 @@ To add another language, copy `app/static/locales/en.json`, translate its values
 
 An importer can write **only outside the dashboard runtime**. Do not change the schema or views to fit a bank; map the export into the existing contract. If you use a cloud AI service, submitting statements sends private data to that provider: local parsing does not require such an upload.
 
+### Each month
+
+Create and validate an importer once per bank/export format using the guide above. **Bank-specific importers are not included in this repository**; the generated importer must provide its exact run command. Reuse it each month, and have your assistant adapt it if the bank changes its export format.
+
+1. Download each bank's statements into an ignored folder such as `imports/2026-10/`. Prefer CSV/XLSX/OFX over PDF.
+2. Run your existing importer against the same personal database. It must make a consistent backup before updates, add new transactions, skip duplicates from repeated or overlapping exports, and preserve manual classifications. Do not initialize a new database each month.
+3. Supply real historical EUR/SEK rates covering the new dates. Review rejected rows, uncertain duplicates and transactions classified as `Otros`; compare counts, totals and balances with the bank statements. Apply classification corrections through the separate import tool, since the dashboard only reads.
+4. Validate the updated database (replace the path if your database is elsewhere):
+
+   ```bash
+   python3 scripts/validate_db.py --db data/finanzas.db
+   ```
+
+   Validation checks the data contract; it does not prove that bank totals or classifications are correct.
+5. If the importer runs on the server, finish its write transaction before refreshing. If it runs on your computer, transfer a consistent SQLite backup to the server's configured `DB_DIRECTORY`, validate it there, and publish it under `DB_FILENAME`, preserving the dashboard user's read access. Do not copy a live `.db` alone while it has pending WAL changes; see the deployment notes below. Statements and databases stay outside GitHub.
+6. Press **↻** in Finanza and select the new month. No Docker rebuild or restart is needed for data updates at the same configured path. Changing environment settings requires recreating the container.
+
 ## What it shows
 
 - Monthly and trailing 12-month income, net spending, savings, savings rate and net investment flows, with comparisons.

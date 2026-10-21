@@ -150,6 +150,21 @@ Si Caddy corre en **otro contenedor**, `127.0.0.1` es ese propio contenedor. Con
 
 ### Actualización mensual y WAL
 
+El importador se crea y valida una vez por banco/formato mediante el [prompt de importación](AI_IMPORT_PROMPT.md). **El repositorio no incluye importadores específicos de bancos**: la herramienta generada debe entregar su comando exacto de ejecución. Reutilízala cada mes; si el banco cambia el formato, pide a tu asistente que la adapte.
+
+1. Descarga los extractos en una carpeta ignorada por Git, por ejemplo `imports/2026-10/`. Prioriza CSV/XLSX/OFX frente a PDF.
+2. Ejecuta tu importador sobre la misma base personal. Debe crear una copia de seguridad coherente antes de actualizar, añadir movimientos nuevos, omitir duplicados de extractos repetidos o solapados y conservar las clasificaciones manuales. No inicialices otra base cada mes.
+3. Aporta tipos de cambio históricos EUR/SEK reales que cubran las fechas nuevas. Revisa filas rechazadas, duplicados dudosos y categorías `Otros`; concilia recuentos, totales y saldos con los extractos. Corrige clasificaciones mediante la herramienta de importación, ya que el dashboard solo lee.
+4. Valida la base actualizada, ajustando la ruta si es necesario:
+
+   ```bash
+   python3 scripts/validate_db.py --db data/finanzas.db
+   ```
+
+   La validación comprueba el contrato de datos; no garantiza que los totales bancarios o las clasificaciones sean correctos.
+5. Si importas en el servidor, termina la transacción de escritura antes de actualizar el dashboard. Si importas en tu ordenador, transfiere una copia coherente de SQLite al `DB_DIRECTORY` del servidor, valídala allí y publícala con el nombre `DB_FILENAME`, conservando el acceso de lectura del usuario del contenedor. Los extractos y la base no se suben a GitHub. Respeta las condiciones WAL indicadas a continuación.
+6. Pulsa **↻** y selecciona el nuevo mes. Actualizar datos en la misma ruta no requiere reconstruir ni reiniciar Docker. Cambiar variables de entorno sí requiere recrear el contenedor.
+
 La app abre de nuevo la base en cada petición. Después de importar datos, pulsa ↻. La herramienta importadora debe gestionar sus transacciones y la publicación de una versión coherente; la app no ejecuta checkpoints ni cambia el modo de journal.
 
 En bases WAL, el lector de solo lectura puede necesitar los archivos `finanzas.db-wal` y `finanzas.db-shm` ya existentes y legibles. Si SQLite necesita crear un archivo auxiliar en el volumen de solo lectura, la petición fallará con un mensaje. Coordina una copia consistente o checkpoint **desde la herramienta que escribe**, o configura allí la entrega de una base consistente compatible con lectura. No copies únicamente el `.db` mientras haya cambios pendientes en su WAL. No uses `immutable=1` para eludirlo en una base que cambia. Véanse las condiciones de [SQLite para lectura de WAL](https://www.sqlite.org/wal.html#read_only_databases) y las opciones [URI de solo lectura](https://www.sqlite.org/uri.html).
