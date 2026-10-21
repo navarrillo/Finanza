@@ -1,0 +1,46 @@
+# Local credentials; publish only the empty example.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Every database and its SQLite sidecars stays local.
+*.[dD][bB]
+*.[dD][bB]-*
+*.[sS][qQ][lL][iI][tT][eE]*
+
+# Private statements, imports, exports, backups and generated files.
+/data/
+/raw/
+/imports/
+/exports/
+/backups/
+/private/
+/dist/
+*.[cC][sS][vV]
+*.[tT][sS][vV]
+*.[xX][lL][sS]
+*.[xX][lL][sS][xX]
+*.[pP][dD][fF]
+*.[oO][fF][xX]
+*.[qQ][fF][xX]
+*.[qQ][iI][fF]
+*.mt940
+*.camt*.xml
+*.bak
+*.log
+*.zip
+*.tar
+*.gz
+
+# SQL dumps can contain transactions. Only publish the canonical empty schema.
+*.[sS][qQ][lL]
+!/finanzas_esquema.sql
+
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store

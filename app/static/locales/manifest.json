@@ -1,0 +1,17 @@
+{
+  "default": "en",
+  "languages": [
+    {
+      "code": "en",
+      "name": "English",
+      "locale": "en-GB",
+      "dir": "ltr"
+    },
+    {
+      "code": "es",
+      "name": "Español",
+      "locale": "es-ES",
+      "dir": "ltr"
+    }
+  ]
+}
