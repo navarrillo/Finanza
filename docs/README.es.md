@@ -2,7 +2,7 @@
 
 Para empezar en dos comandos, consulta [el README principal](../README.md).
 
-Dashboard privado en inglés y español para consultar una base SQLite existente. **La aplicación nunca crea, actualiza ni migra la base de datos.** Los scripts de inicialización y generación de datos ficticios son independientes del dashboard y rechazan sobrescribir archivos existentes. Los importadores también se ejecutan por separado.
+Dashboard privado en inglés y español para consultar una base SQLite existente. **La aplicación nunca crea, actualiza ni migra la base de datos financiera.** El estado de autenticación se guarda en un archivo privado independiente con permiso de escritura. Los scripts de inicialización y generación de datos ficticios son independientes del dashboard y rechazan sobrescribir archivos existentes. Los importadores también se ejecutan por separado.
 
 FastAPI + SQLite de la biblioteca estándar + una SPA sin frameworks ni compilación: un único proceso, pocas dependencias y despliegue sencillo. HTML, CSS, JavaScript y gráficos SVG locales permiten una interfaz adaptable sin CDN, servicios externos ni telemetría.
 
@@ -78,9 +78,15 @@ set +a
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log --no-server-header
 ```
 
-Abre [el dashboard local](http://127.0.0.1:8000). La sesión dura ocho horas. Cerrar sesión revoca el token en el servidor y borra la cookie. Esa lista de revocación está en la memoria del proceso y se olvida al reiniciar; cambiar `APP_PASSWORD` invalida todas las sesiones al momento, también después de un reinicio. El botón de actualización vuelve a leer SQLite sin caché. Las credenciales se configuran en el servidor; la interfaz no permite cambiarlas ni registrarse.
+Abre [el dashboard local](http://127.0.0.1:8000). La sesión dura como máximo una hora; con MFA, caduca además tras quince minutos sin peticiones autenticadas. Con MFA, cerrar sesión elimina el registro persistente, por lo que una cookie copiada sigue revocada tras reiniciar. Cambiar la contraseña, el usuario o el secreto de sesión invalida las cookies existentes. El botón de actualización vuelve a leer SQLite sin caché. Las credenciales se configuran en el servidor; la interfaz no permite cambiarlas ni registrarse.
 
 Cada instalación debe generar credenciales propias; no hay una contraseña de demo compartida. Ejecuta `python3 scripts/setup.py --demo` para crear los datos ficticios y un `.env` privado con credenciales aleatorias, sin sobrescribir archivos existentes. Para otra base ficticia utiliza `scripts/create_demo.py --output /ruta/nueva.db`.
+
+## Autenticación de dos factores
+
+**Antes de arrancar esta versión en una instalación real, configura TOTP.** Sigue la [guía de activación, actualización y recuperación](AUTHENTICATION.es.md). La contraseña y un código del autenticador (o de recuperación de un solo uso) son obligatorios. El alta se realiza desde una terminal privada del servidor, con confirmación de un código; no hay un alta ni un reinicio de MFA públicos en la web.
+
+El directorio de autenticación se monta con escritura y separado del volumen financiero, que conserva solo lectura. La app no arranca sin un estado de autenticación válido y escribible. La excepción sin MFA exige una demo HTTP local con `MFA_REQUIRED=false`, `DEMO_MODE=true`, `COOKIE_SECURE=false` y sin `PUBLIC_ORIGIN`.
 
 ## Conectar la base real
 
@@ -135,7 +141,7 @@ docker compose ps
 docker compose logs --tail=50 finanzas
 ```
 
-El contenedor se ejecuta sin root, con sistema de archivos de solo lectura, capacidades eliminadas y `/tmp` temporal. El directorio de datos completo se monta `read_only: true`. Esto permite ver reemplazos atómicos del archivo en futuras peticiones, y los archivos auxiliares WAL si existen. La imagen no contiene ninguna base ni `.env`.
+El contenedor se ejecuta sin root, con sistema de archivos de solo lectura, capacidades eliminadas y `/tmp` temporal. El directorio de datos financieros completo se monta `read_only: true`; el directorio de autenticación `/auth` es el único volumen persistente escribible de la app. Esto permite ver reemplazos atómicos del archivo en futuras peticiones, y los archivos auxiliares WAL si existen. La imagen no contiene ninguna base ni `.env`.
 
 El puerto se publica únicamente en `127.0.0.1:8000`. Con Caddy instalado **en el host**, adapta [Caddyfile.example](../Caddyfile.example):
 
@@ -148,11 +154,11 @@ finanzas.tudominio.com {
 
 El dominio debe apuntar al servidor para que el proxy gestione HTTPS. La autenticación propia permanece activa. `COOKIE_SECURE=true` requiere HTTPS; usa `false` únicamente para HTTP local. `PUBLIC_ORIGIN` debe coincidir exactamente con el origen del navegador (esquema y host, sin ruta) para validar login y logout detrás del proxy. La imagen arranca Uvicorn con `--proxy-headers` y `--no-server-header`.
 
-`FORWARDED_ALLOW_IPS` es la dirección desde la que el proxy se conecta a la app. No uses `*` ni una red que contenga todas las direcciones: Uvicorn aceptaría un `X-Forwarded-For` elegido por el cliente. Solo reescribe la dirección del cliente si el par TCP está en esa lista, y se queda con la dirección no confiable más cercana del encabezado, así que un prefijo enviado por el navegador no sustituye al cliente que vio el proxy. Cualquier otra conexión conserva su propia dirección, y falsificar `X-Forwarded-For` no abre otro cubo de intentos. El valor por defecto de Compose solo confía en loopback. Con el proxy en el host y la app en Docker, la conexión llega desde la dirección del puente que ve el contenedor, no desde loopback: configura esa dirección. Incluye el proxy, no las direcciones de los visitantes. Los intentos fallidos se limitan por dirección (8 cada cinco minutos) y con un tope global en la misma ventana (30, en memoria, un solo proceso). Rotar direcciones no elimina el tope.
+`FORWARDED_ALLOW_IPS` es la dirección desde la que el proxy se conecta a la app. No uses `*` ni una red que contenga todas las direcciones: Uvicorn aceptaría un `X-Forwarded-For` elegido por el cliente. Solo reescribe la dirección del cliente si el par TCP está en esa lista, y se queda con la dirección no confiable más cercana del encabezado, así que un prefijo enviado por el navegador no sustituye al cliente que vio el proxy. Cualquier otra conexión conserva su propia dirección, y falsificar `X-Forwarded-For` no abre otro cubo de intentos. El valor por defecto de Compose solo confía en loopback. Con el proxy en el host y la app en Docker, la conexión llega desde la dirección del puente que ve el contenedor, no desde loopback: configura esa dirección. Incluye el proxy, no las direcciones de los visitantes. Los intentos fallidos se limitan por dirección (8 cada cinco minutos) y con un tope global en la misma ventana (30; con MFA se guardan en el archivo de autenticación independiente). Rotar direcciones no elimina el tope.
 
 Si el proxy corre en **otro contenedor**, loopback es ese contenedor. Conecta ambos a una red de Docker y usa `reverse_proxy finanzas:8000`; elimina `ports` si el host no necesita acceso. Conserva `PUBLIC_ORIGIN`.
 
-Cerrar sesión revoca el token hasta su caducidad. La revocación vive en la memoria del proceso y se olvida al reiniciar; la cookie se borra igualmente. Cambiar `APP_PASSWORD` invalida todas las sesiones de inmediato.
+Con MFA, cerrar sesión elimina el registro persistente: una cookie copiada sigue revocada tras reiniciar. La protección contra reutilizar TOTP, los códigos de recuperación y los límites de intentos también persisten en el archivo de autenticación independiente. Las sesiones duran como máximo una hora y caducan tras quince minutos sin peticiones autenticadas. Cambiar usuario, contraseña o secreto de sesión invalida las cookies existentes. Consulta la [guía de autenticación](AUTHENTICATION.es.md) para recuperar acceso, rotar el autenticador o revocar todas las sesiones.
 
 Las respuestas incluyen `Permissions-Policy`, `Cross-Origin-Opener-Policy` y `Cross-Origin-Resource-Policy`. `Strict-Transport-Security: max-age=31536000` solo se envía con `COOKIE_SECURE=true`, así el HTTP local no cambia, y no incluye `includeSubDomains`. Un proxy como Caddy reenvía estas cabeceras y no añade HSTS salvo que lo configures. Deja cada política en la app, o sustituye ese campo en el proxy por un único valor. Añadir un segundo `Strict-Transport-Security` (la forma `+` de Caddy) deja dos políticas y el navegador aplica una. El proxy puede seguir enviando su propia cabecera `Server`; `--no-server-header` solo quita la de Uvicorn.
 

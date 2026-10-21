@@ -183,7 +183,7 @@
   "errors.auth": "Sign in to view your finances.",
   "errors.origin": "Origin not allowed.",
   "errors.rateLimit": "Too many attempts. Wait five minutes.",
-  "errors.credentials": "Incorrect username or password.",
+  "errors.credentials": "Incorrect credentials or verification code.",
   "errors.invalidDate": "Invalid date.",
   "errors.dateRange": "The start date must not be after the end date.",
   "errors.amountRange": "The minimum amount must not exceed the maximum.",
@@ -255,5 +255,8 @@
   "fields.frequency": "Frequency",
   "common.yes": "Yes",
   "common.no": "No",
-  "metrics.points": "{value} pp"
+  "metrics.points": "{value} pp",
+  "login.code": "Authenticator or recovery code",
+  "login.codeHelp": "Enter the 6-digit code from your authenticator, or one unused recovery code. Your password is always required.",
+  "errors.authState": "Authentication is temporarily unavailable. Contact the server administrator."
 }

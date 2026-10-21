@@ -19,6 +19,7 @@
 /exports/
 /backups/
 /private/
+/auth/
 /dist/
 *.[cC][sS][vV]
 *.[tT][sS][vV]

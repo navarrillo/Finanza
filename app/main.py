@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from .analytics import dashboard, transactions
 from .db import DataError, connect
 from .i18n import current_language, request_language, error_body
+from . import auth_store
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "finanzas_session"
@@ -35,7 +36,7 @@ COOKIE = "finanzas_session"
 WINDOW_SECONDS = 300
 PER_IP_MAX_ATTEMPTS = 8
 GLOBAL_MAX_ATTEMPTS = 30
-TOKEN_TTL = 28800
+TOKEN_TTL = auth_store.SESSION_TTL
 # Below this, a value is a repeated or tiny alphabet. Documented generators
 # (scripts/setup.py: token_urlsafe(24) and token_hex(32)) stay above it.
 MIN_DISTINCT_CHARACTERS = 8
@@ -52,9 +53,8 @@ DOCUMENTED_PLACEHOLDERS = (
 
 attempts = defaultdict(list)
 global_attempts = []
-# nonce -> unix expiry. Logout revokes a copied cookie until it would have
-# expired. Process memory only: a restart forgets the set. Changing
-# APP_PASSWORD does not depend on it, because the password is part of the key.
+# Local demo revocations live in memory. Production MFA also deletes the
+# persistent session, so a restart cannot reactivate a copied cookie.
 revoked = {}
 state_lock = threading.Lock()
 
@@ -121,6 +121,7 @@ def require_runtime_config():
             "peer lets clients spoof X-Forwarded-For and bypass the per-address "
             "login limit."
         )
+    auth_store.validate_runtime()
 
 
 @asynccontextmanager
@@ -147,14 +148,17 @@ def signing_key():
     # The password is part of the key, so replacing APP_PASSWORD invalidates
     # every cookie, including ones copied earlier and ones still presented
     # after a restart.
-    digest = hashlib.sha256(os.environ["APP_PASSWORD"].encode()).digest()
+    digest = hashlib.sha256(json.dumps([
+        os.environ["APP_PASSWORD"], os.environ.get("APP_USER", "admin"),
+        auth_store.mfa_required(),
+    ]).encode()).digest()
     return hmac.new(os.environ["SESSION_SECRET"].encode(), digest, hashlib.sha256).digest()
 
 
-def make_token():
+def make_token(data=None):
     payload = base64.urlsafe_b64encode(
         json.dumps(
-            {"exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
+            data or {"exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
         ).encode()
     ).decode()
     return (
@@ -183,6 +187,8 @@ def auth(request: Request):
             _purge_revoked(time.time())
             if data["nonce"] in revoked:
                 raise ValueError
+        if auth_store.mfa_required() and not auth_store.active_session(data["nonce"]):
+            raise ValueError
     except (ValueError, KeyError, TypeError):
         raise HTTPException(401, {"key": "errors.auth"})
     return data
@@ -232,6 +238,12 @@ async def data_error(request, exc):
     return JSONResponse(error_body(exc.key, exc.params), status_code=422)
 
 
+@app.exception_handler(auth_store.AuthStateError)
+async def auth_state_error(request, exc):
+    # Missing/corrupt/read-only state never falls back to password-only access.
+    return JSONResponse(error_body("errors.authState"), status_code=503)
+
+
 @app.exception_handler(sqlite3.Error)
 async def sqlite_error(request, exc):
     return JSONResponse(error_body("errors.database"), status_code=503)
@@ -266,6 +278,13 @@ def health():
 class Login(BaseModel):
     username: str = Field(max_length=100)
     password: str = Field(max_length=512)
+    code: str = Field(default="", max_length=64)
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    # Only public policy, never enrollment keys, recovery codes or state paths.
+    return {"mfa_required": auth_store.mfa_required()}
 
 
 def client_address(request: Request):
@@ -314,7 +333,16 @@ def login(body: Login, request: Request):
     # Fixed-size digests avoid length-dependent password comparisons.
     given = hashlib.sha256(body.password.encode()).digest()
     actual = hashlib.sha256(os.environ["APP_PASSWORD"].encode()).digest()
-    if not (good_user and secrets.compare_digest(given, actual)):
+    credentials_ok = good_user and secrets.compare_digest(given, actual)
+    data = {"exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
+    if auth_store.mfa_required():
+        result = auth_store.authenticate(credentials_ok, body.code.strip(), ip, data["nonce"], data["exp"])
+        if result == "limited":
+            raise HTTPException(429, {"key": "errors.rateLimit"})
+        if result != "ok":
+            # Same response for wrong user, password, TOTP or recovery code.
+            raise HTTPException(401, {"key": "errors.credentials"})
+    elif not credentials_ok:
         with state_lock:
             if _limited(ip, now):
                 raise HTTPException(429, {"key": "errors.rateLimit"})
@@ -328,7 +356,7 @@ def login(body: Login, request: Request):
     response = JSONResponse({"ok": True})
     response.set_cookie(
         COOKIE,
-        make_token(),
+        make_token(data),
         max_age=TOKEN_TTL,
         httponly=True,
         samesite="strict",
@@ -340,6 +368,8 @@ def login(body: Login, request: Request):
 @app.post("/api/logout")
 def logout(request: Request, session=Depends(auth)):
     same_origin(request)
+    if auth_store.mfa_required():
+        auth_store.revoke_session(session["nonce"])
     now = time.time()
     with state_lock:
         _purge_revoked(now)
