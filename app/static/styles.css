@@ -1223,7 +1223,7 @@ h1 {
   font-weight: 550;
   margin: 27px 0 12px;
 }
-.login-form > p {
+.login-form form > p {
   color: #929b8c;
   font-size: 12px;
 }
@@ -1261,6 +1261,35 @@ h1 {
   line-height: 1.7;
   min-height: 16px;
 }
+.login-progress {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-top: 30px;
+  color: #929b8c;
+  font-size: 11px;
+}
+.login-progress > span:not(.step-line) { display: flex; align-items: center; gap: 8px; }
+.login-progress b {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 1px solid #dce3d7;
+  border-radius: 50%;
+  font-weight: 500;
+}
+.login-progress .active { color: #315b46; font-weight: 600; }
+.login-progress .active b, .login-progress .complete b { background: #315b46; border-color: #315b46; color: white; }
+.step-line { flex: 1; height: 1px; background: #dce3d7; }
+.password-confirmed { display: flex; gap: 9px; align-items: center; margin-top: 24px; font-size: 11px; color: #315b46; }
+.password-confirmed > span:first-child { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: #e8efe6; }
+.login-form .otp-input { font-size: 27px; letter-spacing: .45em; text-align: center; font-variant-numeric: tabular-nums; padding: 16px 10px 16px 20px; }
+.login-form .recovery-input { font-family: monospace; font-size: 13px; letter-spacing: .02em; padding: 15px 10px; }
+.login-form .login-link { justify-content: center; padding: 8px; margin-top: 13px; border: 0; background: transparent; color: #456a53; }
+.login-form .back-link { margin-top: 4px; color: #798673; gap: 8px; }
+.login-form .login-link:hover { background: #edf2e9; }
+.login-form input:focus-visible { outline: 2px solid #66855d; outline-offset: 3px; }
 .generic-table {
   max-height: 400px;
   overflow: auto;

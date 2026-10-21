@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -30,6 +31,7 @@ from . import auth_store
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "finanzas_session"
+PENDING_COOKIE = "finanzas_pending"
 # Failed logins in a five-minute window. The per-address cap stops one client.
 # The global cap still applies when that client rotates addresses, and when
 # every visitor shares the proxy address because forwarded headers are not trusted.
@@ -158,7 +160,7 @@ def signing_key():
 def make_token(data=None):
     payload = base64.urlsafe_b64encode(
         json.dumps(
-            data or {"exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
+            data or {"purpose": "session", "exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
         ).encode()
     ).decode()
     return (
@@ -174,22 +176,30 @@ def _purge_revoked(now):
             del revoked[nonce]
 
 
+def read_token(raw, purpose):
+    payload, signature = raw.rsplit(".", 1)
+    expected = hmac.new(signing_key(), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise ValueError
+    data = json.loads(base64.urlsafe_b64decode(payload))
+    if (data.get("purpose") != purpose or type(data.get("exp")) is not int
+            or data["exp"] <= time.time()
+            or not isinstance(data.get("nonce"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", data["nonce"])):
+        raise ValueError
+    return data
+
+
 def auth(request: Request):
     try:
-        payload, signature = request.cookies.get(COOKIE, "").rsplit(".", 1)
-        expected = hmac.new(signing_key(), payload.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            raise ValueError
-        data = json.loads(base64.urlsafe_b64decode(payload))
-        if data["exp"] <= time.time() or not isinstance(data.get("nonce"), str):
-            raise ValueError
+        data = read_token(request.cookies.get(COOKIE, ""), "session")
         with state_lock:
             _purge_revoked(time.time())
             if data["nonce"] in revoked:
                 raise ValueError
         if auth_store.mfa_required() and not auth_store.active_session(data["nonce"]):
             raise ValueError
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise HTTPException(401, {"key": "errors.auth"})
     return data
 
@@ -278,7 +288,10 @@ def health():
 class Login(BaseModel):
     username: str = Field(max_length=100)
     password: str = Field(max_length=512)
-    code: str = Field(default="", max_length=64)
+
+
+class Verification(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
 
 
 @app.get("/api/auth/config")
@@ -319,6 +332,26 @@ def _limited(ip, now):
     )
 
 
+def pending_login(request):
+    try:
+        return read_token(request.cookies.get(PENDING_COOKIE, ""), "mfa")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def clear_pending(response):
+    response.delete_cookie(PENDING_COOKIE, path="/api/login", httponly=True,
+                           samesite="strict", secure=cookie_secure())
+
+
+def session_response(data):
+    response = JSONResponse({"ok": True})
+    clear_pending(response)
+    response.set_cookie(COOKIE, make_token(data), max_age=TOKEN_TTL,
+                        httponly=True, samesite="strict", secure=cookie_secure())
+    return response
+
+
 @app.post("/api/login")
 def login(body: Login, request: Request):
     same_origin(request)
@@ -334,14 +367,21 @@ def login(body: Login, request: Request):
     given = hashlib.sha256(body.password.encode()).digest()
     actual = hashlib.sha256(os.environ["APP_PASSWORD"].encode()).digest()
     credentials_ok = good_user and secrets.compare_digest(given, actual)
-    data = {"exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
+    data = {"purpose": "session", "exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
     if auth_store.mfa_required():
-        result = auth_store.authenticate(credentials_ok, body.code.strip(), ip, data["nonce"], data["exp"])
+        pending = {"purpose": "mfa", "exp": int(time.time()) + auth_store.CHALLENGE_TTL,
+                   "nonce": secrets.token_hex(16)}
+        previous = pending_login(request)
+        result = auth_store.begin_login(credentials_ok, ip, pending["nonce"], pending["exp"],
+                                        previous=previous["nonce"] if previous else None)
         if result == "limited":
             raise HTTPException(429, {"key": "errors.rateLimit"})
         if result != "ok":
-            # Same response for wrong user, password, TOTP or recovery code.
             raise HTTPException(401, {"key": "errors.credentials"})
+        response = JSONResponse({"mfa_required": True}, status_code=202)
+        response.set_cookie(PENDING_COOKIE, make_token(pending), max_age=auth_store.CHALLENGE_TTL,
+                            path="/api/login", httponly=True, samesite="strict", secure=cookie_secure())
+        return response
     elif not credentials_ok:
         with state_lock:
             if _limited(ip, now):
@@ -353,15 +393,37 @@ def login(body: Login, request: Request):
         # A successful sign-in clears this address. It is not a failed attempt,
         # so it does not consume the global budget.
         attempts.pop(ip, None)
+    return session_response(data)
+
+
+@app.post("/api/login/verify")
+def verify_login(body: Verification, request: Request):
+    same_origin(request)
+    pending = pending_login(request)
+    result = "expired"
+    data = {"purpose": "session", "exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
+    if pending and auth_store.mfa_required():
+        result = auth_store.verify_login(pending["nonce"], body.code.strip(), client_address(request),
+                                         data["nonce"], data["exp"])
+    if result == "ok":
+        return session_response(data)
+    if result == "limited":
+        raise HTTPException(429, {"key": "errors.rateLimit"})
+    if result == "invalid":
+        raise HTTPException(401, {"key": "errors.verification"})
+    response = JSONResponse(error_body("errors.loginExpired"), status_code=401)
+    clear_pending(response)
+    return response
+
+
+@app.post("/api/login/cancel")
+def cancel_login(request: Request):
+    same_origin(request)
+    pending = pending_login(request)
+    if pending and auth_store.mfa_required():
+        auth_store.cancel_login(pending["nonce"])
     response = JSONResponse({"ok": True})
-    response.set_cookie(
-        COOKIE,
-        make_token(data),
-        max_age=TOKEN_TTL,
-        httponly=True,
-        samesite="strict",
-        secure=cookie_secure(),
-    )
+    clear_pending(response)
     return response
 
 

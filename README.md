@@ -92,7 +92,7 @@ Daily EUR/SEK conversion uses the latest supplied rate on or before the movement
 
 ## Deploy on your own server
 
-**Existing installations must enroll two-factor authentication before restarting this version.** Follow the [authentication upgrade guide](docs/AUTHENTICATION.md) ([español](docs/AUTHENTICATION.es.md)). Production requires both a password and a TOTP authenticator or one-use recovery code; the password-only exception is restricted to local HTTP demos.
+**Password-only installations must enroll two-factor authentication before restarting this version.** If MFA is already configured, keep the current authenticator and recovery codes; the separate auth store upgrades automatically. Follow the [authentication upgrade guide](docs/AUTHENTICATION.md) ([español](docs/AUTHENTICATION.es.md)). Production uses two screens: username/password first, then a TOTP authenticator or one-use recovery code. No session is issued until both steps pass; the password-only exception is restricted to local HTTP demos.
 
 Copy the code to a Linux host with Docker Engine, Compose v2 and Python 3.11+ for the standalone setup helpers. Keep the private database on that host, e.g. `/srv/finanza/data/finanzas.db`. Generate `.env` locally with `scripts/setup.py` or fill `.env.example` with new credentials. Set:
 

@@ -84,7 +84,7 @@ Cada instalación debe generar credenciales propias; no hay una contraseña de d
 
 ## Autenticación de dos factores
 
-**Antes de arrancar esta versión en una instalación real, configura TOTP.** Sigue la [guía de activación, actualización y recuperación](AUTHENTICATION.es.md). La contraseña y un código del autenticador (o de recuperación de un solo uso) son obligatorios. El alta se realiza desde una terminal privada del servidor, con confirmación de un código; no hay un alta ni un reinicio de MFA públicos en la web.
+**Antes del primer arranque con MFA en una instalación real, configura TOTP.** Si ya tienes MFA, conserva el autenticador y los códigos: solo se actualiza automáticamente el archivo de autenticación. Sigue la [guía de activación, actualización y recuperación](AUTHENTICATION.es.md). La contraseña y un código del autenticador (o de recuperación de un solo uso) son obligatorios. El alta se realiza desde una terminal privada del servidor, con confirmación de un código; no hay un alta ni un reinicio de MFA públicos en la web.
 
 El directorio de autenticación se monta con escritura y separado del volumen financiero, que conserva solo lectura. La app no arranca sin un estado de autenticación válido y escribible. La excepción sin MFA exige una demo HTTP local con `MFA_REQUIRED=false`, `DEMO_MODE=true`, `COOKIE_SECURE=false` y sin `PUBLIC_ORIGIN`.
 

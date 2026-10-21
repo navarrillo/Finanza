@@ -153,6 +153,13 @@ const noData = (
 let currentError = null;
 let loginError = null;
 let sessionTimer = null;
+let needsMfa = true;
+let loginStep = "password";
+let recoveryMode = false;
+let verificationError = null;
+let loginBusy = false;
+let challengeTimer = null;
+let challengeDeadline = 0;
 let dashboardFailed = false;
 const errorMessage = (error) =>
   error?.error_key
@@ -166,14 +173,15 @@ async function api(url, options = {}) {
   });
   const data = await r.json();
   if (!r.ok) {
-    if (r.status === 401 && !url.endsWith("/login")) showLogin();
+    if (r.status === 401 && !url.startsWith("/api/login")) showLogin();
     const error = new Error(data.detail);
     error.status = r.status;
     error.error_key = data.error_key || "errors.request";
     error.params = data.params || {};
     throw error;
   }
-  if (url.startsWith("/api/") && !url.endsWith("/logout") && !url.startsWith("/api/auth/")) {
+  const completedLogin = ["/api/login", "/api/login/verify"].includes(url) && data.ok;
+  if (completedLogin || (url.startsWith("/api/") && !url.startsWith("/api/login") && !url.endsWith("/logout") && !url.startsWith("/api/auth/"))) {
     clearTimeout(sessionTimer);
     // Clear visible financial data when server inactivity would expire the session.
     sessionTimer = setTimeout(showLogin, 15 * 60 * 1000);
@@ -191,10 +199,68 @@ function showLogin() {
   $("#refresh").disabled = false;
   $("#login").hidden = false;
   $("#shell").hidden = true;
+  passwordStep();
 }
 function showShell() {
+  clearTimeout(challengeTimer);
+  challengeDeadline = 0;
   $("#login").hidden = true;
   $("#shell").hidden = false;
+}
+function updateLogin() {
+  $(".login-progress").hidden = !needsMfa;
+  $("#password-submit").textContent = t(needsMfa ? "login.continue" : "login.submit");
+  $("#login-form").hidden = loginStep !== "password";
+  $("#verification-form").hidden = loginStep !== "verification";
+  $("#password-step").classList.toggle("active", loginStep === "password");
+  $("#password-step").classList.toggle("complete", loginStep === "verification");
+  $("#verification-step").classList.toggle("active", loginStep === "verification");
+  for (const [id, step] of [["password-step", "password"], ["verification-step", "verification"]]) {
+    if (loginStep === step) $("#" + id).setAttribute("aria-current", "step");
+    else $("#" + id).removeAttribute("aria-current");
+  }
+  const input = $("#auth-code");
+  input.classList.toggle("otp-input", !recoveryMode);
+  input.classList.toggle("recovery-input", recoveryMode);
+  input.inputMode = recoveryMode ? "text" : "numeric";
+  input.maxLength = recoveryMode ? 35 : 6;
+  input.pattern = recoveryMode ? "[A-Fa-f0-9-]{32,35}" : "[0-9]{6}";
+  for (const [id, key] of [["verification-title", recoveryMode ? "login.recoveryTitle" : "login.verifyTitle"], ["verification-subtitle", recoveryMode ? "login.recoverySubtitle" : "login.verifySubtitle"], ["code-label", recoveryMode ? "login.recoveryCode" : "login.otpCode"], ["mfa-help", recoveryMode ? "login.recoveryHelp" : "login.otpHelp"], ["recovery-toggle", recoveryMode ? "login.useAuthenticator" : "login.useRecovery"]]) {
+    $("#" + id).dataset.i18n = key;
+    $("#" + id).textContent = t(key);
+  }
+  $("#login-error").textContent = loginError ? errorMessage(loginError) : "";
+  $("#verification-error").textContent = verificationError ? errorMessage(verificationError) : "";
+  document.querySelectorAll("#login button").forEach((button) => button.disabled = loginBusy);
+}
+function passwordStep(error = null) {
+  clearTimeout(challengeTimer);
+  challengeDeadline = 0;
+  loginStep = "password";
+  recoveryMode = false;
+  verificationError = null;
+  loginError = error;
+  $("#password").value = "";
+  $("#auth-code").value = "";
+  updateLogin();
+}
+function verificationStep() {
+  needsMfa = true;
+  loginStep = "verification";
+  loginError = verificationError = null;
+  recoveryMode = false;
+  $("#password").value = "";
+  challengeDeadline = Date.now() + 5 * 60 * 1000;
+  clearTimeout(challengeTimer);
+  challengeTimer = setTimeout(expireChallenge, 5 * 60 * 1000);
+  updateLogin();
+  $("#auth-code").focus();
+}
+function expireChallenge() {
+  if (loginStep === "verification" && !loginBusy) {
+    passwordStep({ error_key: "errors.loginExpired" });
+    $("#password").focus();
+  }
 }
 function setError(error) {
   currentError = error;
@@ -681,30 +747,78 @@ $("#calendar-icon").innerHTML = icon("calendar");
 $("#logout").innerHTML = icon("logout");
 $("#login-form").onsubmit = async (e) => {
   e.preventDefault();
+  if (loginBusy) return;
+  loginBusy = true;
   loginError = null;
-  $("#login-error").textContent = "";
-  const button = e.target.querySelector("button");
-  button.disabled = true;
+  updateLogin();
   try {
-    await api("/api/login", {
+    const result = await api("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username: $("#username").value,
         password: $("#password").value,
-        code: $("#auth-code").value.trim(),
       }),
     });
-    $("#password").value = "";
-    showShell();
-    await load();
+    if (result.mfa_required) verificationStep();
+    else {
+      showShell();
+      await load();
+    }
   } catch (error) {
     loginError = error;
-    $("#login-error").textContent = errorMessage(error);
   } finally {
     $("#password").value = "";
     $("#auth-code").value = "";
-    button.disabled = false;
+    loginBusy = false;
+    updateLogin();
+  }
+};
+$("#verification-form").onsubmit = async (e) => {
+  e.preventDefault();
+  if (loginBusy) return;
+  loginBusy = true;
+  verificationError = null;
+  updateLogin();
+  try {
+    await api("/api/login/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: $("#auth-code").value.trim() }),
+    });
+    showShell();
+    await load();
+  } catch (error) {
+    if (error.error_key === "errors.loginExpired") passwordStep(error);
+    else verificationError = error;
+  } finally {
+    $("#auth-code").value = "";
+    loginBusy = false;
+    if (challengeDeadline && Date.now() >= challengeDeadline) expireChallenge();
+    updateLogin();
+    if (!$("#login").hidden) $(loginStep === "verification" ? "#auth-code" : "#password").focus();
+  }
+};
+$("#recovery-toggle").onclick = () => {
+  if (loginBusy) return;
+  recoveryMode = !recoveryMode;
+  verificationError = null;
+  $("#auth-code").value = "";
+  updateLogin();
+  $("#auth-code").focus();
+};
+$("#login-back").onclick = async () => {
+  if (loginBusy) return;
+  loginBusy = true;
+  updateLogin();
+  try {
+    await api("/api/login/cancel", { method: "POST" });
+    passwordStep();
+    $("#password").focus();
+  } catch (error) { verificationError = error; }
+  finally {
+    loginBusy = false;
+    if (challengeDeadline && Date.now() >= challengeDeadline) expireChallenge();
+    updateLogin();
   }
 };
 $("#logout").onclick = async () => {
@@ -774,6 +888,7 @@ async function changeLanguage(code) {
     if (!changed) return;
     FinanzaI18n.apply();
     updateChrome();
+    updateLogin();
     if (dashboardFailed)
       $("#content").innerHTML = noData(
         t("errors.display"),
@@ -800,9 +915,8 @@ document.querySelectorAll("[data-language]").forEach((select) => {
       : "resumen";
     try {
       const policy = await api("/api/auth/config");
-      $("#mfa-field").hidden = !policy.mfa_required;
-      $("#mfa-help").hidden = !policy.mfa_required;
-      $("#auth-code").required = policy.mfa_required;
+      needsMfa = policy.mfa_required;
+      updateLogin();
       await api("/api/session");
       showShell();
       await load();

@@ -34,10 +34,10 @@
         <div>
           <span class="eyebrow" data-i18n="login.eyebrow"></span>
           <h1>
-            <span data-i18n="login.money"></span><br /><span
+            <span data-i18n="login.money"></span><br /> <span
               data-i18n="login.decisions"
             ></span
-            ><br /><span data-i18n="login.clear"></span>
+            ><br /> <span data-i18n="login.clear"></span>
           </h1>
           <p data-i18n="login.story"></p>
           <div class="login-graphic">
@@ -48,10 +48,16 @@
         <span class="login-foot" data-i18n="login.forward"></span>
       </div>
       <div class="login-form-wrap">
-        <form id="login-form" class="login-form">
+        <div class="login-form">
           <span class="pill"
             >◈ &nbsp; <span data-i18n="login.private"></span
           ></span>
+          <div class="login-progress" aria-label="" data-i18n-aria-label="login.steps">
+            <span id="password-step"><b>1</b><span data-i18n="login.accessStep"></span></span>
+            <span class="step-line" aria-hidden="true"></span>
+            <span id="verification-step"><b>2</b><span data-i18n="login.verifyStep"></span></span>
+          </div>
+          <form id="login-form">
           <h2 data-i18n="login.welcome"></h2>
           <p data-i18n="login.subtitle"></p>
           <label
@@ -69,18 +75,29 @@
               autocomplete="current-password"
               required
           /></label>
-          <label id="mfa-field">
-            <span data-i18n="login.code"></span>
-            <input id="auth-code" type="text" autocomplete="one-time-code"
-              autocapitalize="characters" spellcheck="false" maxlength="64"
-              aria-describedby="mfa-help" required />
-          </label>
-          <small id="mfa-help" data-i18n="login.codeHelp"></small>
           <p id="login-error" class="form-error" role="alert"></p>
           <button class="button primary" type="submit">
-            <span data-i18n="login.submit"></span><span>↗</span></button
-          ><small data-i18n="login.privacy"></small>
-        </form>
+            <span id="password-submit" data-i18n="login.continue"></span><span aria-hidden="true">→</span>
+          </button>
+          </form>
+          <form id="verification-form" hidden>
+            <h2 id="verification-title" data-i18n="login.verifyTitle"></h2>
+            <p id="verification-subtitle" data-i18n="login.verifySubtitle"></p>
+            <div class="password-confirmed"><span aria-hidden="true">✓</span><span data-i18n="login.passwordConfirmed"></span></div>
+            <label>
+              <span id="code-label" data-i18n="login.otpCode"></span>
+              <input id="auth-code" class="otp-input" type="text" inputmode="numeric"
+                autocomplete="one-time-code" autocapitalize="off" spellcheck="false"
+                maxlength="6" pattern="[0-9]{6}" aria-describedby="mfa-help" required />
+            </label>
+            <small id="mfa-help" data-i18n="login.otpHelp"></small>
+            <p id="verification-error" class="form-error" role="alert"></p>
+            <button class="button primary" type="submit"><span data-i18n="login.verifySubmit"></span><span aria-hidden="true">↗</span></button>
+            <button id="recovery-toggle" class="button login-link" type="button" data-i18n="login.useRecovery"></button>
+            <button id="login-back" class="button login-link back-link" type="button"><span aria-hidden="true">←</span><span data-i18n="login.back"></span></button>
+          </form>
+          <small data-i18n="login.privacy"></small>
+        </div>
       </div>
     </div>
     <div id="shell" hidden>
