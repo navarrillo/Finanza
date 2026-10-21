@@ -47,8 +47,27 @@ def client(enrolled):
         yield client
 
 
+def begin(client, password=PASSWORD):
+    return client.post("/api/login", json={"username": "admin", "password": password})
+
+
+def verify(client, code):
+    return client.post("/api/login/verify", json={"code": code})
+
+
 def login(client, code="", password=PASSWORD):
-    return client.post("/api/login", json={"username": "admin", "password": password, "code": code})
+    response = begin(client, password)
+    if response.status_code != 202 or not code:
+        return response
+    return verify(client, code)
+
+
+def store_login(code, nonce, now=NOW):
+    challenge = "challenge-" + nonce
+    result = store.begin_login(True, "ip", challenge, now + store.CHALLENGE_TTL, now=now)
+    if result != "ok":
+        return result
+    return store.verify_login(challenge, code, "ip", nonce, now + store.SESSION_TTL, now=now)
 
 
 def test_totp_rfc_vector_and_bounded_drift():
@@ -61,13 +80,21 @@ def test_totp_rfc_vector_and_bounded_drift():
 
 def test_both_factors_required_and_failures_generic(client):
     otp = pyotp.TOTP(SECRET).at(NOW)
-    replies = [login(client), login(client, "000000"), login(client, otp, "wrong-password")]
-    assert all(r.status_code == 401 and "set-cookie" not in r.headers for r in replies)
-    assert replies[0].json() == replies[1].json() == replies[2].json()
+    response = begin(client)
+    assert response.status_code == 202
+    assert response.json() == {"mfa_required": True}
+    assert main.COOKIE not in client.cookies
+    assert main.PENDING_COOKIE in client.cookies
     for url in ("/api/session", "/api/dashboard", "/api/transactions", "/api/export.csv"):
         assert client.get(url).status_code == 401
-    assert login(client, otp).status_code == 200
+    assert verify(client, "000000").status_code == 401
+    assert begin(client, "wrong-password").status_code == 401
+    unknown = client.post("/api/login", json={"username": "unknown", "password": PASSWORD})
+    assert unknown.status_code == 401
+    assert unknown.json() == begin(client, "wrong-password").json()
+    assert verify(client, otp).status_code == 200
     assert client.get("/api/session").status_code == 200
+    assert main.PENDING_COOKIE not in client.cookies
     cookie = client.cookies[main.COOKIE]
     assert SECRET not in cookie and otp not in cookie and PASSWORD not in cookie
 
@@ -97,8 +124,10 @@ def test_recovery_codes_hashed_single_use_and_password_required(client, enrolled
 def test_factor_consumption_is_atomic(enrolled, use_recovery):
     _, codes, _ = enrolled
     code = codes[0] if use_recovery else pyotp.TOTP(SECRET).at(NOW)
+    for index in range(4):
+        assert store.begin_login(True, "same-ip", f"pending-{index}", NOW + 300, now=NOW) == "ok"
     def attempt(index):
-        return store.authenticate(True, code, "same-ip", f"nonce-{index}", NOW + 3600, now=NOW)
+        return store.verify_login(f"pending-{index}", code, "same-ip", f"nonce-{index}", NOW + 3600, now=NOW)
     with ThreadPoolExecutor(max_workers=4) as executor:
         results = list(executor.map(attempt, range(4)))
     assert results.count("ok") == 1
@@ -116,9 +145,9 @@ def test_persistent_limits_cover_password_and_factor_guesses(client, enrolled):
 
 def test_global_limit_across_ips(enrolled):
     for index in range(30):
-        assert store.authenticate(False, "", f"ip-{index}", f"nonce-{index}", NOW + 3600, now=NOW) == "invalid"
-    assert store.authenticate(True, pyotp.TOTP(SECRET).at(NOW), "fresh", "new", NOW + 3600, now=NOW) == "limited"
-    assert store.authenticate(True, pyotp.TOTP(SECRET).at(NOW + 330), "fresh", "new", NOW + 4000, now=NOW + 330) == "ok"
+        assert store.begin_login(False, f"ip-{index}", f"nonce-{index}", NOW + 300, now=NOW) == "invalid"
+    assert store.begin_login(True, "fresh", "new", NOW + 300, now=NOW) == "limited"
+    assert store_login(pyotp.TOTP(SECRET).at(NOW + 330), "new", now=NOW + 330) == "ok"
 
 
 def test_revoked_cookie_stays_revoked_after_restart(client, enrolled):
@@ -228,10 +257,16 @@ def test_unwritable_store_fails_closed(client, enrolled):
 
 def test_secure_cookie_flags(client, enrolled, monkeypatch):
     monkeypatch.setenv("COOKIE_SECURE", "true")
-    response = login(client, enrolled[1][0])
-    assert response.status_code == 200
-    value = response.headers["set-cookie"].lower()
-    assert "httponly" in value and "samesite=strict" in value and "secure" in value
+    with TestClient(main.app, base_url="https://testserver") as secure:
+        pending = begin(secure)
+        assert pending.status_code == 202
+        value = pending.headers["set-cookie"].lower()
+        assert "httponly" in value and "samesite=strict" in value and "secure" in value
+        response = verify(secure, enrolled[1][0])
+        assert response.status_code == 200
+        values = response.headers.get_list("set-cookie")
+        value = next(v.lower() for v in values if v.startswith(main.COOKIE + "="))
+        assert "httponly" in value and "samesite=strict" in value and "secure" in value
 
 
 def test_local_cli_revoke_and_noninteractive_enrollment(enrolled, tmp_path):
@@ -241,7 +276,7 @@ def test_local_cli_revoke_and_noninteractive_enrollment(enrolled, tmp_path):
     assert result.returncode == 1
     assert "interactive terminal" in result.stderr
     assert "otpauth://" not in result.stdout and not path.exists()
-    assert store.authenticate(True, enrolled[1][0], "ip", "nonce", NOW + 3600, now=NOW) == "ok"
+    assert store_login(enrolled[1][0], "nonce") == "ok"
     result = subprocess.run([sys.executable, "scripts/manage_auth.py", "revoke-sessions", "--state", str(enrolled[0])], cwd=root, capture_output=True, text=True)
     assert result.returncode == 0
     assert not store.active_session("nonce", now=NOW)
@@ -292,3 +327,122 @@ def test_public_policy_no_secrets_and_origin_checks(client, enrolled):
     response = client.post("/api/login", json={"username": "admin", "password": PASSWORD, "code": enrolled[1][0]}, headers={"Origin": "https://evil.test"})
     assert response.status_code == 403
     assert login(client, enrolled[1][0]).status_code == 200
+
+
+def test_verification_without_password_proof_cannot_consume_factor(client, enrolled):
+    assert verify(client, enrolled[1][0]).status_code == 401
+    assert client.get("/api/session").status_code == 401
+    assert login(client, enrolled[1][0]).status_code == 200
+
+
+def test_one_request_cannot_skip_the_password_step(client, enrolled):
+    response = client.post("/api/login", json={"username": "admin", "password": PASSWORD, "code": enrolled[1][0]})
+    assert response.status_code == 202
+    assert main.COOKIE not in client.cookies
+    assert verify(client, enrolled[1][0]).status_code == 200
+
+
+def test_pending_cookie_cannot_be_used_as_a_session(client):
+    response = begin(client)
+    assert response.status_code == 202
+    token = client.cookies[main.PENDING_COOKIE]
+    client.cookies.set(main.COOKIE, token)
+    assert client.get("/api/session").status_code == 401
+    assert client.get("/api/export.csv").status_code == 401
+    assert "max-age=300" in response.headers["set-cookie"].lower()
+
+
+def test_pending_challenge_expires(client, enrolled, monkeypatch):
+    assert begin(client).status_code == 202
+    monkeypatch.setattr(store.time, "time", lambda: NOW + store.CHALLENGE_TTL + 1)
+    response = verify(client, enrolled[1][0])
+    assert response.status_code == 401
+    assert response.json()["error_key"] == "errors.loginExpired"
+    assert main.COOKIE not in client.cookies
+
+
+def test_back_cancels_pending_proof_and_preserves_recovery_code(client, enrolled):
+    assert begin(client).status_code == 202
+    token = client.cookies[main.PENDING_COOKIE]
+    assert client.post("/api/login/cancel").status_code == 200
+    client.cookies.clear()
+    client.cookies.set(main.PENDING_COOKIE, token, path="/api/login")
+    response = verify(client, enrolled[1][0])
+    assert response.status_code == 401
+    assert response.json()["error_key"] == "errors.loginExpired"
+    assert login(client, enrolled[1][0]).status_code == 200
+
+
+def test_consumed_challenge_cannot_create_a_second_session(client, enrolled):
+    assert begin(client).status_code == 202
+    token = client.cookies[main.PENDING_COOKIE]
+    assert verify(client, enrolled[1][0]).status_code == 200
+    assert client.post("/api/logout").status_code == 200
+    client.cookies.set(main.PENDING_COOKIE, token, path="/api/login")
+    assert verify(client, enrolled[1][1]).status_code == 401
+    with TestClient(main.app) as fresh:
+        assert login(fresh, enrolled[1][1]).status_code == 200
+
+
+def test_challenge_has_its_own_attempt_limit_across_addresses(enrolled):
+    assert store.begin_login(True, "origin", "pending", NOW + 300, now=NOW) == "ok"
+    for index in range(store.CHALLENGE_LIMIT):
+        expected = "expired" if index == store.CHALLENGE_LIMIT - 1 else "invalid"
+        assert store.verify_login("pending", "000000", f"ip-{index}", f"nonce-{index}", NOW + 3600, now=NOW) == expected
+    assert store.verify_login("pending", enrolled[1][0], "fresh", "nonce", NOW + 3600, now=NOW) == "expired"
+
+
+def test_pending_challenges_are_bounded_and_expire(enrolled):
+    for index in range(store.GLOBAL_LIMIT):
+        assert store.begin_login(True, "ip", f"pending-{index}", NOW + 300, now=NOW) == "ok"
+    assert store.begin_login(True, "ip", "overflow", NOW + 300, now=NOW) == "limited"
+    assert store.begin_login(True, "ip", "next", NOW + 601, now=NOW + 301) == "ok"
+
+
+def test_password_change_invalidates_pending_proof(client, enrolled, monkeypatch):
+    assert begin(client).status_code == 202
+    monkeypatch.setenv("APP_PASSWORD", "new-temporary-password-2026")
+    response = verify(client, enrolled[1][0])
+    assert response.status_code == 401
+    assert response.json()["error_key"] == "errors.loginExpired"
+    assert login(client, enrolled[1][0], password="new-temporary-password-2026").status_code == 200
+
+
+def test_admin_revocation_cancels_pending_proof(client, enrolled):
+    assert begin(client).status_code == 202
+    store.revoke_all(enrolled[0])
+    assert verify(client, enrolled[1][0]).status_code == 401
+
+
+def test_challenge_is_atomic_even_with_two_different_valid_codes(enrolled):
+    assert store.begin_login(True, "ip", "pending", NOW + 300, now=NOW) == "ok"
+    def attempt(index):
+        return store.verify_login("pending", enrolled[1][index], "ip", f"nonce-{index}", NOW + 3600, now=NOW)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, range(2)))
+    assert sorted(results) == ["expired", "ok"]
+    with sqlite3.connect(enrolled[0]) as con:
+        assert con.execute("SELECT COUNT(*) FROM recovery").fetchone()[0] == 9
+        assert con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+def test_existing_v1_auth_store_upgrades_without_reenrollment(enrolled):
+    path, codes, finance = enrolled
+    before = finance.read_bytes()
+    with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE challenges")
+        con.execute("PRAGMA user_version=1")
+    with TestClient(main.app) as client:
+        assert login(client, codes[0]).status_code == 200
+    with sqlite3.connect(path) as con:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("SELECT secret FROM configuration").fetchone()[0] == SECRET
+    assert finance.read_bytes() == before
+
+
+def test_verify_and_cancel_reject_cross_origin_requests(client, enrolled):
+    assert begin(client).status_code == 202
+    headers = {"Origin": "https://evil.test"}
+    assert client.post("/api/login/verify", json={"code": enrolled[1][0]}, headers=headers).status_code == 403
+    assert client.post("/api/login/cancel", headers=headers).status_code == 403
+    assert verify(client, enrolled[1][0]).status_code == 200

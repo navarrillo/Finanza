@@ -6,7 +6,7 @@ Enrollment and recovery administration run in a private terminal on your compute
 
 ## Existing installations: required upgrade step
 
-**Enroll before restarting the upgraded app.** MFA is enabled by default. A missing, invalid or unwritable authentication store prevents startup; losing it during operation returns an authentication error, never password-only access. Existing session cookies are invalidated by this upgrade. No finance database migration is needed.
+**Password-only installations must enroll before restarting the upgraded app.** Installations already using MFA keep their authenticator and recovery codes; the separate auth store upgrades automatically as described below. MFA is enabled by default. A missing, invalid or unwritable authentication store prevents startup; losing it during operation returns an authentication error, never password-only access. Existing session cookies are invalidated by this upgrade. No finance database migration is needed.
 
 The authentication database contains the TOTP secret, hashes of recovery codes, hashed session identifiers, activity/expiry timestamps and hashed-address login failures. It is **separate from `finanzas.db`**. Only the authentication directory is writable by the dashboard; the financial data directory remains mounted read-only. The TOTP secret must be recoverable for verification and is stored in the private file, not hashed or encrypted at rest. Protect the directory, backups and server access accordingly; recovery codes and session identifiers are stored only as hashes.
 
@@ -58,7 +58,11 @@ Enrollment creates the file with owner-only read/write permissions. Run the app 
 
 ## Monthly use
 
-Log in with your password and a current authenticator code. The website has one field that also accepts a recovery code, with or without hyphens. Incorrect user, password and factor all produce the same error. Codes are never returned by an API or stored in browser storage.
+The password step does not create an authenticated session or grant access to data. It issues a signed HttpOnly cookie and a pending record in the auth store, valid for five minutes and at most five wrong code attempts in addition to per-address/global limits. At most thirty pending challenges can exist at once. The code step atomically consumes both proof and factor before creating a session. Refreshing the page returns to the password form.
+
+Upgrading the original MFA implementation automatically upgrades only the separate auth store to version 2 to hold pending challenges. Existing enrollment and recovery codes remain valid; old session cookies require signing in again. No financial schema or data migration occurs.
+
+Enter your username and password, then select **Continue**. A separate form asks only for the authenticator code. **Use a recovery code** switches that second form to recovery mode (hyphens are optional); **Back to sign in** cancels the pending proof. The password is cleared from the form after step one and is never sent again with the code. Codes are never returned by an API or stored in browser storage.
 
 - Each TOTP time step and recovery code can be used once. Consumption is atomic across simultaneous requests and persists across app restarts.
 - Failed logins are limited to eight per observed address and thirty globally per five minutes. Both password and factor failures count; the MFA limits persist across restarts. The global limit can temporarily block legitimate login attempts during an attack. Wait for the window to clear; restarting is not a bypass.

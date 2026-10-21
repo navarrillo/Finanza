@@ -4,7 +4,7 @@ El acceso real exige usuario, contraseña y un código TOTP de seis dígitos o u
 
 ## Actualizar una instalación existente con Docker
 
-**Configura el autenticador antes de reiniciar la app actualizada.** MFA está activado por defecto. Si su archivo falta, es inválido o no es escribible, la app no arranca; si falla durante el funcionamiento, devuelve un error sin permitir acceso solo con contraseña. Las cookies anteriores a esta actualización dejan de ser válidas. No se migra ni se modifica `finanzas.db`.
+**Si actualizas desde una versión que solo pedía contraseña, configura el autenticador antes de reiniciar.** Si ya utilizas MFA, conserva el autenticador y los códigos: el archivo de autenticación se actualiza automáticamente como se explica más abajo. MFA está activado por defecto. Si su archivo falta, es inválido o no es escribible, la app no arranca; si falla durante el funcionamiento, devuelve un error sin permitir acceso solo con contraseña. Las cookies anteriores a esta actualización dejan de ser válidas. No se migra ni se modifica `finanzas.db`.
 
 Conserva las credenciales y rutas financieras de tu `.env` y añade o ajusta:
 
@@ -54,7 +54,11 @@ El archivo nuevo se crea con permisos `600`. Ejecuta la app y la herramienta con
 
 ## Política de acceso
 
-- El mismo campo de login admite TOTP o un código de recuperación, con o sin guiones. Usuario, contraseña y código incorrectos producen el mismo error.
+El primer paso no crea una sesión ni da acceso a datos: genera una cookie temporal HttpOnly firmada y un registro pendiente en el archivo de autenticación. Caduca en cinco minutos y permite como máximo cinco códigos incorrectos, además de los límites por dirección y globales. Puede haber como máximo treinta comprobaciones pendientes a la vez. El segundo paso consume ese registro y el código de forma atómica antes de crear la sesión. Recargar la página vuelve al formulario de contraseña.
+
+Al actualizar desde la primera versión de MFA, el archivo de autenticación se actualiza automáticamente a la versión 2 para guardar estas comprobaciones pendientes. No necesitas volver a dar de alta el autenticador ni cambiar los códigos de recuperación. Las cookies de sesión anteriores requieren iniciar sesión otra vez; la base financiera conserva su esquema y contenido.
+
+- Primero introduce usuario y contraseña y pulsa «Continuar». Después verás únicamente el campo TOTP. «Usar un código de recuperación» cambia el segundo formulario; admite códigos con o sin guiones. «Volver al inicio de sesión» cancela la comprobación pendiente. La contraseña no se conserva en el formulario ni se reenvía al verificar el código.
 - Cada periodo TOTP y cada código de recuperación se consumen una sola vez, incluso con peticiones simultáneas o reinicios. Se tolera como máximo un periodo adyacente; mantén el reloj del servidor sincronizado.
 - Hay un máximo de ocho fallos por dirección observada y treinta globales cada cinco minutos, contando contraseña y segundo factor. Los límites persisten con MFA. Un ataque puede bloquear temporalmente nuevos logins; reiniciar no elimina el límite.
 - Las sesiones duran como máximo una hora y caducan tras quince minutos sin una petición autenticada a la API. La actividad no amplía la hora máxima. El navegador también oculta los datos tras quince minutos sin una respuesta autenticada correcta.
