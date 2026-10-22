@@ -234,7 +234,7 @@ def test_security_headers_and_hsts_only_with_secure_cookies(client, monkeypatch)
     response = client.get("/healthz")
     assert (
         response.headers["Permissions-Policy"]
-        == "camera=(), microphone=(), geolocation=(), payment=()"
+        == "camera=(), microphone=(), geolocation=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self)"
     )
     assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
     assert response.headers["Cross-Origin-Resource-Policy"] == "same-origin"

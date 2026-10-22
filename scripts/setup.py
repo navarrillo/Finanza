@@ -52,7 +52,7 @@ def setup(root=ROOT, demo=False):
     if not demo:
         print("Before starting: install requirements and run python3 scripts/manage_auth.py setup")
     print("Next: docker compose up -d --build")
-    print("For deployment over HTTPS, set COOKIE_SECURE=true and PUBLIC_ORIGIN.")
+    print("For deployment over HTTPS, set COOKIE_SECURE=true and PUBLIC_ORIGIN. Passkeys use that origin.")
 
 
 if __name__ == "__main__":

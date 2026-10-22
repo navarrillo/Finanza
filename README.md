@@ -92,7 +92,7 @@ Daily EUR/SEK conversion uses the latest supplied rate on or before the movement
 
 ## Deploy on your own server
 
-**Password-only installations must enroll two-factor authentication before restarting this version.** If MFA is already configured, keep the current authenticator and recovery codes; the separate auth store upgrades automatically. Follow the [authentication upgrade guide](docs/AUTHENTICATION.md) ([español](docs/AUTHENTICATION.es.md)). Production uses two screens: username/password first, then a TOTP authenticator or one-use recovery code. No session is issued until both steps pass; the password-only exception is restricted to local HTTP demos.
+**Password-only installations must enroll two-factor authentication before restarting this version.** If MFA is already configured, keep the current authenticator and recovery codes; the separate auth store upgrades automatically to hold passkeys. Follow the [authentication upgrade guide](docs/AUTHENTICATION.md) ([español](docs/AUTHENTICATION.es.md)). Production still offers two screens: username/password first, then a TOTP authenticator or one-use recovery code. A passkey registered for this installation is a full alternative: one verified passkey opens a session without the password or the authenticator code. No session is issued until a passkey or both password steps succeed. The password-only exception is restricted to local HTTP demos.
 
 Copy the code to a Linux host with Docker Engine, Compose v2 and Python 3.11+ for the standalone setup helpers. Keep the private database on that host, e.g. `/srv/finanza/data/finanzas.db`. Generate `.env` locally with `scripts/setup.py` or fill `.env.example` with new credentials. Set:
 
@@ -108,6 +108,9 @@ DEMO_MODE=false
 MFA_REQUIRED=true
 AUTH_DIRECTORY=./private/auth
 AUTH_DB_PATH=./private/auth/auth.db
+# Optional. Defaults shown. See .env.example.
+# WEBAUTHN_RP_ID=
+# WEBAUTHN_REAUTH_SECONDS=300
 ```
 
 The `APP_PASSWORD` and `SESSION_SECRET` lines above are placeholders. The app refuses to start if either value is empty, shorter than its minimum (12 and 32 characters), low-entropy, or copied from this documentation. `python3 scripts/setup.py` writes a private `.env`. To choose the values yourself:
@@ -137,11 +140,27 @@ finanza.example.com {
 
 Point the proxy at your domain and terminate HTTPS there. Keep the app login enabled. Set `PUBLIC_ORIGIN` to the exact browser origin (scheme and host, no path) so login and logout checks work behind the proxy. `COOKIE_SECURE=false` is for local HTTP only. Any reverse proxy works the same way: forward to the app, and publish the app port only where that proxy connects. If the proxy runs in another container, put both on one Docker network and use `reverse_proxy finanzas:8000`; drop the host port mapping when the host does not need it.
 
-The image starts Uvicorn with `--proxy-headers` and `--no-server-header`. Set `FORWARDED_ALLOW_IPS` to the address from which the proxy connects to the app. Never set `*`, and never a network that contains every address: Uvicorn would then trust a client-supplied `X-Forwarded-For`. It rewrites the client address only for a listed peer, and it keeps the nearest untrusted address in that header, so a prefix the browser added does not replace the client the proxy observed. Any other connection keeps its own peer address, and a forged `X-Forwarded-For` does not open a new login bucket. The Compose default trusts loopback only. When the proxy is on the host and the app is in Docker, the connection comes from the bridge address the container sees, not from loopback, so set that address. List the proxy, not visitor addresses. Failed logins are limited per client address (8 per five minutes) and by a global cap in the same window (30; persisted in the separate auth store when MFA is enabled). Rotating addresses does not remove the cap.
+The image starts Uvicorn with `--proxy-headers` and `--no-server-header`. Set `FORWARDED_ALLOW_IPS` to the address from which the proxy connects to the app. Never set `*`, and never a network that contains every address: Uvicorn would then trust a client-supplied `X-Forwarded-For`. It rewrites the client address only for a listed peer, and it keeps the nearest untrusted address in that header, so a prefix the browser added does not replace the client the proxy observed. Any other connection keeps its own peer address, and a forged `X-Forwarded-For` does not open a new login bucket. The Compose default trusts loopback only. When the proxy is on the host and the app is in Docker, the connection comes from the bridge address the container sees, not from loopback, so set that address. List the proxy, not visitor addresses. Failed logins are limited per client address (8 per five minutes) and by a global cap in the same window (30; persisted in the separate auth store when MFA is enabled). Password failures, authenticator failures and passkey failures share those counters. Rotating addresses does not remove the cap.
+
+These routes do not require a session. A proxy allowlist that permits only anonymous authentication traffic should include them, and nothing else under `/api/`:
+
+```text
+GET  /
+GET  /static/*
+GET  /healthz
+GET  /api/auth/config
+POST /api/login
+POST /api/login/verify
+POST /api/login/cancel
+POST /api/login/passkey/options
+POST /api/login/passkey
+```
+
+`POST /api/login/passkey/options` and `POST /api/login/passkey` are the only new unauthenticated routes. Listing, renaming, deleting and registering passkeys (`/api/passkeys` and `/api/passkeys/options`) require a session, and registration also requires a sign-in from the last few minutes.
 
 With MFA enabled, signing out deletes the registered session, and revocation survives restarts. TOTP replay prevention, one-use recovery codes and failed login limits also persist. Sessions expire after one hour or fifteen minutes without an authenticated API request. Changing `APP_PASSWORD`, `APP_USER` or `SESSION_SECRET` invalidates signed cookies; rotating the authenticator revokes all sessions. See the [authentication guide](docs/AUTHENTICATION.md) for recovery and admin revocation.
 
-Responses include `Permissions-Policy`, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy`. `Strict-Transport-Security: max-age=31536000` is sent only when `COOKIE_SECURE=true`, so local HTTP is unchanged. The value does not include `includeSubDomains`. A proxy such as Caddy forwards these headers and does not add HSTS unless you configure it. Leave each policy to the app, or replace that one field at the proxy. Appending a second `Strict-Transport-Security` (Caddy's `+` header form) leaves two policies, and a browser applies one of them. The proxy may still send its own `Server` header. The app's `--no-server-header` only removes Uvicorn's.
+Responses include `Permissions-Policy`, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy`. `Permissions-Policy` keeps camera, microphone, geolocation and payment disabled, and allows `publickey-credentials-get` and `publickey-credentials-create` for this origin only (`self`), which is what the browser needs for passkeys. `Strict-Transport-Security: max-age=31536000` is sent only when `COOKIE_SECURE=true`, so local HTTP is unchanged. The value does not include `includeSubDomains`. A proxy such as Caddy forwards these headers and does not add HSTS unless you configure it. Leave each policy to the app, or replace that one field at the proxy. If you replace `Permissions-Policy`, keep the two `publickey-credentials-*` directives or passkeys will not run. Appending a second `Strict-Transport-Security` (Caddy's `+` header form) leaves two policies, and a browser applies one of them. The proxy may still send its own `Server` header. The app's `--no-server-header` only removes Uvicorn's.
 
 For financial data, the app opens a new `mode=ro` connection per request, enables `query_only`, and reads a consistent transaction. It never performs a migration, checkpoint or import. For a changing WAL database, the importer must publish a consistent copy or ensure existing readable WAL/SHM files are available. Do not copy a live `.db` alone with pending WAL changes or mark a changing database `immutable`. See the [detailed deployment guide](docs/README.es.md#actualización-mensual-y-wal).
 
@@ -169,7 +188,7 @@ For bank importer contributions, include parser code, mapping notes and **synthe
 app/                    # Financial read-only API, authentication and dashboard
 app/static/locales/     # Shared UI/API translation catalogs + language manifest
 scripts/setup.py        # Unique local credentials + demo or empty DB
-scripts/manage_auth.py  # Private TOTP enrollment, rotation and session revocation
+scripts/manage_auth.py  # Private TOTP enrollment, rotation, session and passkey revocation
 app/auth_store.py       # Separate auth state; never opens the finance DB
 scripts/init_db.py      # Standalone empty DB initializer; no overwrite
 scripts/create_demo.py  # Reproducible synthetic data generator; no overwrite
@@ -191,6 +210,6 @@ python -m pytest -q
 
 Tests cover read-only database access, unchanged file hashes, login, session revocation, login limits behind a trusted proxy, security headers, daily/inverse/weekend FX, view reconciliation, split counts, reimbursements, one-offs, investment returns, joint separation, filters, CSV and empty/future tables. Setup/validation tests use temporary files. Translation checks cover key/placeholder parity and API errors; optional dependency-free JavaScript tests also check browser detection, saved preferences, plurals, fallback, races and locale formatting when Node.js is available (Node.js is not needed to run the app). Docker configuration has been validated; the image has not been built/run in the development environment because no Docker daemon was available there. Validate it on your target host before deployment.
 
-MFA tests cover both-factor enforcement, RFC TOTP vectors, replay/recovery consumption under concurrency, persistent limits and logout, idle/absolute expiry, fail-closed configuration, rotation and unchanged finance database hashes.
+MFA tests cover both-factor enforcement, RFC TOTP vectors, replay/recovery consumption under concurrency, persistent limits and logout, idle/absolute expiry, fail-closed configuration, rotation and unchanged finance database hashes. Passkey tests cover registration, discoverable login, reused and expired challenges, wrong origin, wrong relying party ID, registration without a recent sign-in, the shared login limit, sign-counter regression and the revocation command.
 
 Licensed under [MIT](LICENSE).

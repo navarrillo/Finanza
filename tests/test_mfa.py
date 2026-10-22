@@ -323,7 +323,7 @@ def test_mfa_required_by_default_and_no_production_downgrade(enrolled, monkeypat
 
 
 def test_public_policy_no_secrets_and_origin_checks(client, enrolled):
-    assert client.get("/api/auth/config").json() == {"mfa_required": True}
+    assert client.get("/api/auth/config").json() == {"mfa_required": True, "passkeys": True}
     response = client.post("/api/login", json={"username": "admin", "password": PASSWORD, "code": enrolled[1][0]}, headers={"Origin": "https://evil.test"})
     assert response.status_code == 403
     assert login(client, enrolled[1][0]).status_code == 200
@@ -435,8 +435,9 @@ def test_existing_v1_auth_store_upgrades_without_reenrollment(enrolled):
     with TestClient(main.app) as client:
         assert login(client, codes[0]).status_code == 200
     with sqlite3.connect(path) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
         assert con.execute("SELECT secret FROM configuration").fetchone()[0] == SECRET
+        assert con.execute("SELECT COUNT(*) FROM passkeys").fetchone()[0] == 0
     assert finance.read_bytes() == before
 
 
