@@ -25,6 +25,11 @@ CHALLENGE_LIMIT = 5
 # WebAuthn ceremonies are short-lived and single-use. Two minutes covers a
 # user gesture without leaving a reusable challenge behind.
 WEBAUTHN_CHALLENGE_TTL = 120
+# Pending passkey login ceremonies for one client address. A newer request
+# replaces that address's oldest challenge, so the address can always start
+# a fresh ceremony and cannot fill GLOBAL_LIMIT. A constant, like IP_LIMIT,
+# not an environment variable. It must stay below GLOBAL_LIMIT.
+PASSKEY_LOGIN_IP_LIMIT = 5
 MAX_PASSKEYS = 10
 _RP_ID = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -436,6 +441,12 @@ def _recent(con, session_nonce, now):
 
 
 def _webauthn_backlog(con, kind, holder):
+    """True when a registration ceremony must be refused.
+
+    Login ceremonies do not use this. They replace the caller's oldest
+    pending challenge instead of rejecting, so one address cannot fill the
+    table and then block everyone else.
+    """
     total = con.execute("SELECT COUNT(*) FROM webauthn_challenges").fetchone()[0]
     if total >= GLOBAL_LIMIT:
         return True
@@ -445,6 +456,42 @@ def _webauthn_backlog(con, kind, holder):
         (kind, holder),
     ).fetchone()[0]
     return own >= IP_LIMIT
+
+
+def _login_challenge_count(con, ip_hash=None):
+    if ip_hash is None:
+        row = con.execute(
+            "SELECT COUNT(*) FROM webauthn_challenges WHERE kind='authentication'"
+        ).fetchone()
+    else:
+        row = con.execute(
+            "SELECT COUNT(*) FROM webauthn_challenges WHERE kind='authentication' AND ip_hash=?",
+            (ip_hash,),
+        ).fetchone()
+    return row[0]
+
+
+def _delete_oldest_login_challenges(con, count, ip_hash=None):
+    """Drop the oldest pending login ceremonies.
+
+    ``rowid`` is insertion order. Ceremonies started together share an
+    expiry, so the expiry column cannot tell which one was replaced.
+    """
+    if count <= 0:
+        return
+    if ip_hash is None:
+        rows = con.execute(
+            "SELECT rowid FROM webauthn_challenges WHERE kind='authentication' ORDER BY rowid LIMIT ?",
+            (count,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT rowid FROM webauthn_challenges WHERE kind='authentication' AND ip_hash=? "
+            "ORDER BY rowid LIMIT ?",
+            (ip_hash, count),
+        ).fetchall()
+    for row in rows:
+        con.execute("DELETE FROM webauthn_challenges WHERE rowid=?", (row[0],))
 
 
 def _insert_webauthn_challenge(con, challenge, kind, expires, session_hash, ip_hash):
@@ -481,12 +528,32 @@ def _consume_webauthn_challenge(con, challenge, kind, now, session_hash=None):
 
 
 def begin_passkey_authentication(ip, challenge, now=None):
+    """Store one single-use login challenge for this client address.
+
+    The address may hold ``PASSKEY_LOGIN_IP_LIMIT`` pending login challenges.
+    At that cap, its oldest challenge is deleted and the new one is stored,
+    so the caller is not rejected and cannot occupy the global pool. If other
+    addresses already fill ``GLOBAL_LIMIT``, the oldest login challenge in
+    the table is deleted to make a slot. Registration ceremonies are not
+    deleted. Expired rows are purged before either decision. An address that
+    is already over the failed-login limit still gets no challenge.
+    """
     now = time.time() if now is None else now
     ip_hash = _ip_hash(ip)
     with store() as con:
         _prune(con, now)
-        if _limited(con, ip_hash) or _webauthn_backlog(con, "authentication", ip_hash):
+        if _limited(con, ip_hash):
             return "limited"
+        held = _login_challenge_count(con, ip_hash)
+        own_drop = max(0, held - (PASSKEY_LOGIN_IP_LIMIT - 1))
+        total = con.execute("SELECT COUNT(*) FROM webauthn_challenges").fetchone()[0]
+        global_drop = max(0, total - own_drop - (GLOBAL_LIMIT - 1))
+        # Refuse only when freeing a slot would require deleting a registration
+        # ceremony. Do that check before deleting, so a refusal keeps every row.
+        if global_drop > _login_challenge_count(con) - own_drop:
+            return "limited"
+        _delete_oldest_login_challenges(con, own_drop, ip_hash)
+        _delete_oldest_login_challenges(con, global_drop)
         _insert_webauthn_challenge(con, challenge, "authentication", now + WEBAUTHN_CHALLENGE_TTL, None, ip_hash)
         return "ok"
 

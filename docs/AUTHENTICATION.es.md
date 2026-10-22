@@ -99,7 +99,7 @@ Solo puedes registrar una desde el navegador con la sesión abierta, y solo dura
 
 `PUBLIC_ORIGIN` es el origen exacto del navegador (esquema, host y puerto si no es el predeterminado, sin ruta). El identificador de la parte de confianza es el host de ese origen. `WEBAUTHN_RP_ID` solo hace falta para usar un dominio padre, por ejemplo `example.com` si el origen es `https://finanza.example.com`. Es un nombre de host, sin esquema, puerto ni ruta. Si no coincide con el host ni con un padre, la app no arranca. El navegador solo ofrece passkeys en HTTPS o en localhost.
 
-Los retos duran dos minutos y se borran al usarlos. El contador de firmas no puede retroceder; si retrocede, el acceso se rechaza y el contador guardado no cambia. Los autenticadores que siempre informan cero se aceptan. Los fallos de passkey cuentan en el mismo límite por dirección y global que una contraseña incorrecta, y la respuesta es el mismo rechazo genérico.
+Los retos duran dos minutos y se borran al usarlos. Cada dirección de cliente puede tener cinco retos de acceso con passkey pendientes. Otra petición de esa misma dirección sustituye su reto de acceso pendiente más antiguo, así que una sola dirección no puede llenar el cupo compartido de treinta ceremonias WebAuthn. El contador de firmas no puede retroceder; si retrocede, el acceso se rechaza y el contador guardado no cambia. Los autenticadores que siempre informan cero se aceptan. Los fallos de passkey cuentan en el mismo límite por dirección y global que una contraseña incorrecta, y la respuesta es el mismo rechazo genérico.
 
 Estas dos rutas no exigen sesión y son las que hay que permitir en una lista del proxy:
 
