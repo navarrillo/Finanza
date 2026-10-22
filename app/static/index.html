@@ -79,6 +79,10 @@
           <button class="button primary" type="submit">
             <span id="password-submit" data-i18n="login.continue"></span><span aria-hidden="true">→</span>
           </button>
+          <div id="passkey-login-block" hidden>
+            <p class="login-or" data-i18n="login.or"></p>
+            <button id="passkey-login" class="button" type="button" data-i18n="login.passkey"></button>
+          </div>
           </form>
           <form id="verification-form" hidden>
             <h2 id="verification-title" data-i18n="login.verifyTitle"></h2>
@@ -123,6 +127,10 @@
           <p data-i18n="app.habits"></p>
           <span data-i18n="app.perspective"></span>
         </div>
+        <button id="manage-passkeys" class="nav-link passkey-nav" type="button" hidden>
+          <span class="passkey-icon" aria-hidden="true"></span>
+          <span data-i18n="passkeys.manage"></span>
+        </button>
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span
@@ -209,5 +217,20 @@
         </main>
       </div>
     </div>
+    <dialog id="passkeys" aria-labelledby="passkeys-title">
+      <h2 id="passkeys-title" data-i18n="passkeys.title"></h2>
+      <p data-i18n="passkeys.help"></p>
+      <p id="passkey-reauth" hidden data-i18n="errors.reauth"></p>
+      <div id="passkey-list"></div>
+      <label class="passkey-name"
+        ><span data-i18n="passkeys.name"></span>
+        <input id="passkey-name" type="text" maxlength="64" autocomplete="off" data-i18n-placeholder="passkeys.defaultName" />
+      </label>
+      <p id="passkey-error" class="form-error" role="alert"></p>
+      <div class="passkey-actions">
+        <button id="passkey-add" class="button primary" type="button" data-i18n="passkeys.add"></button>
+        <button id="passkey-close" class="button" type="button" data-i18n="passkeys.close"></button>
+      </div>
+    </dialog>
   </body>
 </html>

@@ -158,6 +158,8 @@ let loginStep = "password";
 let recoveryMode = false;
 let verificationError = null;
 let loginBusy = false;
+let passkeysEnabled = false;
+let passkeyState = { passkeys: [], can_register: false };
 let challengeTimer = null;
 let challengeDeadline = 0;
 let dashboardFailed = false;
@@ -180,7 +182,7 @@ async function api(url, options = {}) {
     error.params = data.params || {};
     throw error;
   }
-  const completedLogin = ["/api/login", "/api/login/verify"].includes(url) && data.ok;
+  const completedLogin = ["/api/login", "/api/login/verify", "/api/login/passkey"].includes(url) && data.ok;
   if (completedLogin || (url.startsWith("/api/") && !url.startsWith("/api/login") && !url.endsWith("/logout") && !url.startsWith("/api/auth/"))) {
     clearTimeout(sessionTimer);
     // Clear visible financial data when server inactivity would expire the session.
@@ -191,6 +193,7 @@ async function api(url, options = {}) {
 function showLogin() {
   clearTimeout(sessionTimer);
   sessionTimer = null;
+  if ($("#passkeys")?.open) $("#passkeys").close();
   ++loadNumber;
   state.data = null;
   $("#content").innerHTML = "";
@@ -229,6 +232,7 @@ function updateLogin() {
     $("#" + id).dataset.i18n = key;
     $("#" + id).textContent = t(key);
   }
+  $("#passkey-login-block").hidden = !passkeysEnabled || loginStep !== "password";
   $("#login-error").textContent = loginError ? errorMessage(loginError) : "";
   $("#verification-error").textContent = verificationError ? errorMessage(verificationError) : "";
   document.querySelectorAll("#login button").forEach((button) => button.disabled = loginBusy);
@@ -889,6 +893,7 @@ async function changeLanguage(code) {
     FinanzaI18n.apply();
     updateChrome();
     updateLogin();
+    if ($("#passkeys").open) renderPasskeys(passkeyState);
     if (dashboardFailed)
       $("#content").innerHTML = noData(
         t("errors.display"),
@@ -905,10 +910,176 @@ async function changeLanguage(code) {
 document.querySelectorAll("[data-language]").forEach((select) => {
   select.onchange = () => changeLanguage(select.value);
 });
+function b64urlToBytes(value) {
+  const pad = "=".repeat((4 - (value.length % 4)) % 4);
+  const binary = atob((value + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+function bytesToB64url(bytes) {
+  const view = new Uint8Array(bytes);
+  let binary = "";
+  for (let i = 0; i < view.length; i++) binary += String.fromCharCode(view[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function credentialToJSON(credential) {
+  if (typeof credential.toJSON === "function") return credential.toJSON();
+  const response = credential.response;
+  const json = {
+    id: credential.id,
+    rawId: bytesToB64url(credential.rawId),
+    type: credential.type,
+    clientExtensionResults: credential.getClientExtensionResults?.() || {},
+    response: { clientDataJSON: bytesToB64url(response.clientDataJSON) },
+  };
+  if (response.attestationObject) {
+    json.response.attestationObject = bytesToB64url(response.attestationObject);
+    const transports = response.getTransports?.();
+    if (transports) json.response.transports = transports;
+  } else {
+    json.response.authenticatorData = bytesToB64url(response.authenticatorData);
+    json.response.signature = bytesToB64url(response.signature);
+    if (response.userHandle) json.response.userHandle = bytesToB64url(response.userHandle);
+  }
+  if (credential.authenticatorAttachment) json.authenticatorAttachment = credential.authenticatorAttachment;
+  return json;
+}
+function publicKeyOptions(options) {
+  if (options.user && window.PublicKeyCredential?.parseCreationOptionsFromJSON)
+    return PublicKeyCredential.parseCreationOptionsFromJSON(options);
+  if (!options.user && window.PublicKeyCredential?.parseRequestOptionsFromJSON)
+    return PublicKeyCredential.parseRequestOptionsFromJSON(options);
+  const copy = { ...options, challenge: b64urlToBytes(options.challenge) };
+  if (copy.user) copy.user = { ...copy.user, id: b64urlToBytes(copy.user.id) };
+  for (const key of ["excludeCredentials", "allowCredentials"]) {
+    if (copy[key]) copy[key] = copy[key].map((item) => ({ ...item, id: b64urlToBytes(item.id) }));
+  }
+  return copy;
+}
+function passkeyWhen(stamp) {
+  if (!stamp) return t("passkeys.never");
+  const date = new Date(stamp * 1000);
+  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  return dateFmt(day);
+}
+function passkeyProblem(error) {
+  if (error?.name === "NotAllowedError") return { error_key: "passkeys.cancelled" };
+  if (error?.name === "NotSupportedError" || error?.name === "SecurityError")
+    return { error_key: "errors.passkeyUnsupported" };
+  return error;
+}
+function renderPasskeys(data) {
+  passkeyState = data;
+  $("#passkey-reauth").hidden = data.can_register;
+  $("#passkey-add").disabled = !data.can_register;
+  const list = $("#passkey-list");
+  if (!data.passkeys.length) {
+    list.innerHTML = `<p class="passkey-empty">${tx("passkeys.empty")}</p>`;
+    return;
+  }
+  list.innerHTML = data.passkeys.map((item) => {
+    const id = esc(item.id);
+    const used = item.last_used ? t("passkeys.lastUsed", { when: passkeyWhen(item.last_used) }) : t("passkeys.never");
+    return `<div class="passkey-row"><input data-passkey-name="${id}" value="${esc(item.name)}" maxlength="64" aria-label="${tx("passkeys.name")}"><button class="button" type="button" data-passkey-rename="${id}">${tx("passkeys.rename")}</button><button class="button" type="button" data-passkey-delete="${id}">${tx("passkeys.delete")}</button><small>${tx("passkeys.created", { when: passkeyWhen(item.created) })} · ${esc(used)}</small></div>`;
+  }).join("");
+}
+async function refreshPasskeys() {
+  renderPasskeys(await api("/api/passkeys"));
+}
+$("#passkey-login").onclick = async () => {
+  if (loginBusy) return;
+  loginBusy = true;
+  loginError = null;
+  updateLogin();
+  try {
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      loginError = { error_key: "errors.passkeyUnsupported" };
+      return;
+    }
+    const options = await api("/api/login/passkey/options", { method: "POST" });
+    const credential = await navigator.credentials.get({ publicKey: publicKeyOptions(options) });
+    await api("/api/login/passkey", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(credentialToJSON(credential)),
+    });
+    showShell();
+    await load();
+  } catch (error) {
+    loginError = passkeyProblem(error);
+  } finally {
+    loginBusy = false;
+    updateLogin();
+  }
+};
+$("#manage-passkeys").onclick = async () => {
+  $("#sidebar").classList.remove("open");
+  $("#passkey-error").textContent = "";
+  $("#passkey-name").value = "";
+  if (!$("#passkeys").open) $("#passkeys").showModal();
+  try {
+    await refreshPasskeys();
+  } catch (error) {
+    $("#passkey-error").textContent = errorMessage(error);
+  }
+};
+$("#passkey-close").onclick = () => $("#passkeys").close();
+$("#passkey-add").onclick = async () => {
+  $("#passkey-error").textContent = "";
+  $("#passkey-add").disabled = true;
+  try {
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      $("#passkey-error").textContent = t("errors.passkeyUnsupported");
+      return;
+    }
+    const options = await api("/api/passkeys/options", { method: "POST" });
+    const credential = await navigator.credentials.create({ publicKey: publicKeyOptions(options) });
+    await api("/api/passkeys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: $("#passkey-name").value.trim() || t("passkeys.defaultName"),
+        credential: credentialToJSON(credential),
+      }),
+    });
+    $("#passkey-name").value = "";
+    $("#passkey-error").textContent = t("passkeys.saved");
+    await refreshPasskeys();
+  } catch (error) {
+    $("#passkey-error").textContent = errorMessage(passkeyProblem(error));
+  } finally {
+    $("#passkey-add").disabled = !passkeyState.can_register;
+  }
+};
+$("#passkey-list").onclick = async (event) => {
+  const rename = event.target.closest("[data-passkey-rename]");
+  const remove = event.target.closest("[data-passkey-delete]");
+  const id = rename?.dataset.passkeyRename || remove?.dataset.passkeyDelete;
+  if (!id) return;
+  $("#passkey-error").textContent = "";
+  try {
+    if (remove) {
+      if (!window.confirm(t("passkeys.confirmDelete"))) return;
+      await api("/api/passkeys/" + encodeURIComponent(id), { method: "DELETE" });
+    } else {
+      const input = [...$("#passkey-list").querySelectorAll("[data-passkey-name]")].find((el) => el.dataset.passkeyName === id);
+      await api("/api/passkeys/" + encodeURIComponent(id), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: input?.value || "" }),
+      });
+    }
+    await refreshPasskeys();
+  } catch (error) {
+    $("#passkey-error").textContent = errorMessage(error);
+  }
+};
 (async () => {
   try {
     await FinanzaI18n.init();
     FinanzaI18n.apply();
+    $("#manage-passkeys .passkey-icon").innerHTML = icon("lock");
     updateChrome();
     state.page = pages[location.hash.slice(1)]
       ? location.hash.slice(1)
@@ -916,6 +1087,8 @@ document.querySelectorAll("[data-language]").forEach((select) => {
     try {
       const policy = await api("/api/auth/config");
       needsMfa = policy.mfa_required;
+      passkeysEnabled = !!policy.passkeys;
+      $("#manage-passkeys").hidden = !passkeysEnabled;
       updateLogin();
       await api("/api/session");
       showShell();
