@@ -13,6 +13,9 @@ services:
       MFA_REQUIRED: ${MFA_REQUIRED:-true}
       AUTH_DB_PATH: /auth/auth.db
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      # Optional. Empty uses the host of PUBLIC_ORIGIN. See .env.example.
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+      WEBAUTHN_REAUTH_SECONDS: ${WEBAUTHN_REAUTH_SECONDS:-300}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       # Uvicorn --proxy-headers trusts X-Forwarded-For only from this address:
       # the reverse proxy, as the app sees the connection. Never "*".
