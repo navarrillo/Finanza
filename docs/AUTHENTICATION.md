@@ -103,7 +103,7 @@ Register one only from a signed-in browser, and only within `WEBAUTHN_REAUTH_SEC
 
 `PUBLIC_ORIGIN` is the exact origin the browser will send (scheme, host and port if it is not the default, no path). The relying party ID defaults to that host. Set `WEBAUTHN_RP_ID` only when the credential should be scoped to a parent domain of that host, for example `example.com` when the origin is `https://finanza.example.com`. The value is a hostname: no scheme, port or path. A value that is not that host or one of its parents prevents startup. Browsers offer passkeys on HTTPS and on localhost; a plain HTTP origin on another host will not.
 
-Challenges last two minutes and are deleted on first use. The sign counter stored with each credential must not go backwards; a regression is rejected and the stored counter is left as it is. Authenticators that always report zero are accepted. Failed passkey attempts use the same per-address and global limits as a wrong password, and the response is the same generic rejection.
+Challenges last two minutes and are deleted on first use. Each client address may hold five pending passkey login challenges. A further request from that address replaces its oldest pending login challenge, so one address cannot fill the shared pool of thirty WebAuthn ceremonies. The sign counter stored with each credential must not go backwards; a regression is rejected and the stored counter is left as it is. Authenticators that always report zero are accepted. Failed passkey attempts use the same per-address and global limits as a wrong password, and the response is the same generic rejection.
 
 These two routes are unauthenticated, same-origin, and are the passkey entries for a proxy allowlist:
 
