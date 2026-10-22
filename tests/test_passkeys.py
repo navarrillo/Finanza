@@ -14,6 +14,7 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 from app import auth_store as store
@@ -26,6 +27,8 @@ PASSWORD = "temporary-test-password-2026"
 ORIGIN = "https://finanzas.example.test"
 RP_ID = "finanzas.example.test"
 ROOT = Path(__file__).resolve().parents[1]
+# Documentation address (RFC 5737). The trusted proxy peer, not a deployment.
+PROXY = "192.0.2.10"
 
 
 class SoftPasskey:
@@ -137,6 +140,22 @@ def totp_login(client, code=None):
     response = client.post("/api/login/verify", json={"code": code})
     assert response.status_code == 200
     return response
+
+
+def authentication_challenge_count(path):
+    with sqlite3.connect(path) as con:
+        return con.execute(
+            "SELECT COUNT(*) FROM webauthn_challenges WHERE kind='authentication'"
+        ).fetchone()[0]
+
+
+def challenge_is_pending(path, challenge_b64):
+    digest = hashlib.sha256(base64url_to_bytes(challenge_b64)).hexdigest()
+    with sqlite3.connect(path) as con:
+        return con.execute(
+            "SELECT 1 FROM webauthn_challenges WHERE challenge_hash=?",
+            (digest,),
+        ).fetchone() is not None
 
 
 def sign_count(path, credential_id):
@@ -427,3 +446,130 @@ def test_relying_party_settings_are_rejected_when_they_do_not_match(enrolled, mo
             pass
     monkeypatch.setenv("WEBAUTHN_RP_ID", "example.test")
     store.validate_runtime()
+
+
+def test_one_address_cannot_block_passkey_login_for_another(client, enrolled):
+    path = enrolled[0]
+    assert store.PASSKEY_LOGIN_IP_LIMIT < store.GLOBAL_LIMIT
+    totp_login(client)
+    soft = register(client)
+    assert client.post("/api/logout").status_code == 200
+    held = client.post("/api/login/passkey/options")
+    assert held.status_code == 200
+    held_options = held.json()
+    with TestClient(main.app, client=("203.0.113.5", 443)) as attacker:
+        for _ in range(store.GLOBAL_LIMIT + store.PASSKEY_LOGIN_IP_LIMIT):
+            response = attacker.post("/api/login/passkey/options")
+            assert response.status_code == 200
+    # The spammer keeps only its own cap. The other address's challenge is still there.
+    assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT + 1
+    assert challenge_is_pending(path, held_options["challenge"])
+    fresh = client.post("/api/login/passkey/options")
+    assert fresh.status_code == 200
+    assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT + 2
+    logged_in = client.post("/api/login/passkey", json=soft.authenticate(held_options, ORIGIN))
+    assert logged_in.status_code == 200
+    assert client.get("/api/dashboard").status_code == 200
+
+
+def test_passkey_login_cap_replaces_the_oldest_challenge_for_that_address(client, enrolled):
+    path = enrolled[0]
+    assert store.PASSKEY_LOGIN_IP_LIMIT >= 2
+    totp_login(client)
+    soft = register(client)
+    assert client.post("/api/logout").status_code == 200
+    first = client.post("/api/login/passkey/options").json()
+    second = client.post("/api/login/passkey/options").json()
+    for _ in range(store.PASSKEY_LOGIN_IP_LIMIT - 2):
+        assert client.post("/api/login/passkey/options").status_code == 200
+    assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT
+    assert challenge_is_pending(path, first["challenge"])
+    newest = client.post("/api/login/passkey/options").json()
+    assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT
+    assert not challenge_is_pending(path, first["challenge"])
+    assert challenge_is_pending(path, second["challenge"])
+    assert challenge_is_pending(path, newest["challenge"])
+    evicted = client.post("/api/login/passkey", json=soft.authenticate(first, ORIGIN))
+    assert evicted.status_code == 401
+    assert evicted.json()["error_key"] == "errors.credentials"
+    assert main.COOKIE not in client.cookies
+    assert client.post("/api/login/passkey", json=soft.authenticate(newest, ORIGIN)).status_code == 200
+
+
+def test_full_login_pool_still_issues_a_challenge_to_a_new_address(enrolled):
+    path = enrolled[0]
+    oldest = os.urandom(32)
+    assert store.begin_passkey_authentication("203.0.113.1", oldest, now=NOW) == "ok"
+    for index in range(2, store.GLOBAL_LIMIT + 1):
+        assert store.begin_passkey_authentication(
+            f"203.0.113.{index}", os.urandom(32), now=NOW
+        ) == "ok"
+    new = os.urandom(32)
+    assert store.begin_passkey_authentication("198.51.100.8", new, now=NOW) == "ok"
+    with sqlite3.connect(path) as con:
+        assert con.execute("SELECT COUNT(*) FROM webauthn_challenges").fetchone()[0] == store.GLOBAL_LIMIT
+        assert con.execute(
+            "SELECT 1 FROM webauthn_challenges WHERE challenge_hash=?",
+            (hashlib.sha256(oldest).hexdigest(),),
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM webauthn_challenges WHERE challenge_hash=?",
+            (hashlib.sha256(new).hexdigest(),),
+        ).fetchone() is not None
+    with TestClient(main.app, client=("198.51.100.9", 443)) as client:
+        assert client.post("/api/login/passkey/options").status_code == 200
+
+
+def test_expired_passkey_login_challenges_are_purged_before_the_address_cap(enrolled):
+    path = enrolled[0]
+    ip = "203.0.113.5"
+    for _ in range(store.PASSKEY_LOGIN_IP_LIMIT):
+        assert store.begin_passkey_authentication(ip, os.urandom(32), now=NOW) == "ok"
+    fresh = os.urandom(32)
+    later = NOW + store.WEBAUTHN_CHALLENGE_TTL + 1
+    assert store.begin_passkey_authentication(ip, fresh, now=later) == "ok"
+    with sqlite3.connect(path) as con:
+        rows = [bytes(row[0]) for row in con.execute("SELECT challenge FROM webauthn_challenges")]
+    assert rows == [fresh]
+
+
+def test_passkey_login_challenge_cap_uses_the_proxy_client_address(enrolled):
+    path = enrolled[0]
+    wrapped = ProxyHeadersMiddleware(main.app, trusted_hosts=PROXY)
+    with TestClient(wrapped, client=(PROXY, 443)) as client:
+        for _ in range(store.PASSKEY_LOGIN_IP_LIMIT + 2):
+            response = client.post(
+                "/api/login/passkey/options",
+                headers={"X-Forwarded-For": "203.0.113.5"},
+            )
+            assert response.status_code == 200
+        assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT
+        other = client.post(
+            "/api/login/passkey/options",
+            headers={"X-Forwarded-For": "203.0.113.8"},
+        )
+        assert other.status_code == 200
+        # A second forwarded address has its own cap. The TCP peer is the proxy.
+        assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT + 1
+        prefixed = client.post(
+            "/api/login/passkey/options",
+            headers={"X-Forwarded-For": "198.51.100.9, 203.0.113.5"},
+        )
+        assert prefixed.status_code == 200
+        # The browser-supplied prefix is not a new address. The proxy's client stays put.
+        assert authentication_challenge_count(path) == store.PASSKEY_LOGIN_IP_LIMIT + 1
+    before = authentication_challenge_count(path)
+    with TestClient(wrapped, client=("198.51.100.20", 1234)) as direct:
+        for index in range(store.PASSKEY_LOGIN_IP_LIMIT):
+            response = direct.post(
+                "/api/login/passkey/options",
+                headers={"X-Forwarded-For": f"203.0.113.{index + 20}"},
+            )
+            assert response.status_code == 200
+        extra = direct.post(
+            "/api/login/passkey/options",
+            headers={"X-Forwarded-For": "198.51.100.77"},
+        )
+        assert extra.status_code == 200
+    # An untrusted peer keeps its own address. Forged headers do not open new caps.
+    assert authentication_challenge_count(path) == before + store.PASSKEY_LOGIN_IP_LIMIT
