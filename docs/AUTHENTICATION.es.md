@@ -91,4 +91,35 @@ El archivo privado de autenticación contiene la clave TOTP, hashes de códigos 
 
 Restaurar una copia antigua también restaura códigos consumidos y sesiones revocadas. **Detén la app, restaura, rota el autenticador y sus códigos, cambia `SESSION_SECRET` y vuelve a arrancar.** No uses clones de este estado en servidores independientes. Todos los procesos de la instalación deben compartir el mismo archivo en un sistema de archivos local; las réplicas distribuidas y volúmenes de red quedan fuera de este diseño.
 
-TOTP mejora la protección ante una contraseña robada, pero puede ser capturado mediante phishing en tiempo real. Las passkeys/WebAuthn serían un siguiente paso. No se incluyen passkeys, múltiples usuarios, dispositivos recordados ni recuperación remota en este cambio. Consulta también la [guía técnica en inglés](AUTHENTICATION.md), la [documentación de PyOTP](https://pyauth.github.io/pyotp/) y la [guía MFA de OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html).
+## Passkeys
+
+Una passkey es una credencial WebAuthn descubrible. El acceso no pide el nombre de usuario. El autenticador debe verificar a la persona (`userVerification=required`) y guardar una credencial residente. La contraseña y el TOTP siguen disponibles.
+
+Solo puedes registrar una desde el navegador con la sesión abierta, y solo durante `WEBAUTHN_REAUTH_SECONDS` tras entrar con contraseña y autenticador o con otra passkey (300 por defecto; de 60 a 3600). En la barra lateral, **Passkeys** permite añadir, renombrar y eliminar. Eliminar una no cierra la sesión actual.
+
+`PUBLIC_ORIGIN` es el origen exacto del navegador (esquema, host y puerto si no es el predeterminado, sin ruta). El identificador de la parte de confianza es el host de ese origen. `WEBAUTHN_RP_ID` solo hace falta para usar un dominio padre, por ejemplo `example.com` si el origen es `https://finanza.example.com`. Es un nombre de host, sin esquema, puerto ni ruta. Si no coincide con el host ni con un padre, la app no arranca. El navegador solo ofrece passkeys en HTTPS o en localhost.
+
+Los retos duran dos minutos y se borran al usarlos. El contador de firmas no puede retroceder; si retrocede, el acceso se rechaza y el contador guardado no cambia. Los autenticadores que siempre informan cero se aceptan. Los fallos de passkey cuentan en el mismo límite por dirección y global que una contraseña incorrecta, y la respuesta es el mismo rechazo genérico.
+
+Estas dos rutas no exigen sesión y son las que hay que permitir en una lista del proxy:
+
+```text
+POST /api/login/passkey/options
+POST /api/login/passkey
+```
+
+La cookie, el tiempo de inactividad y el cierre de sesión son los mismos que con contraseña.
+
+Para borrar todas las passkeys por SSH, sin cambiar el autenticador:
+
+```bash
+docker compose run --rm --no-deps finanzas python scripts/manage_auth.py revoke-passkeys --state /auth/auth.db
+```
+
+No hace falta una terminal que oculte la entrada. No toca la contraseña, el autenticador, los códigos de recuperación ni las sesiones abiertas. Una cookie robada sigue valiendo hasta que caduque o ejecutes `revoke-sessions`. Rotar el autenticador tampoco borra las passkeys. Si pierdes un dispositivo, ejecuta los dos comandos.
+
+Sin Docker: `python scripts/manage_auth.py revoke-passkeys --state ./private/auth/auth.db`.
+
+Al actualizar, el archivo de autenticación pasa solo a la versión 3. Conserva el autenticador y los códigos. El volumen `/auth` debe seguir siendo escribible; no hace falta otro volumen. Reconstruye la imagen para instalar el paquete `webauthn`. La base financiera no cambia.
+
+TOTP sigue siendo el acceso de reserva y puede capturarse con phishing en tiempo real. No hay varios usuarios, dispositivos recordados ni recuperación remota. Consulta la [guía técnica en inglés](AUTHENTICATION.md), la [documentación de PyOTP](https://pyauth.github.io/pyotp/), [WebAuthn](https://www.w3.org/TR/webauthn-2/) y la [guía MFA de OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html).
