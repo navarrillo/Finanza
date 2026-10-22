@@ -1,3 +1,4 @@
 fastapi==0.135.1
 uvicorn==0.42.0
 pyotp==2.9.0
+webauthn==3.0.1

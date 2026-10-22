@@ -22,12 +22,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .analytics import dashboard, transactions
 from .db import DataError, connect
 from .i18n import current_language, request_language, error_body
-from . import auth_store
+from . import auth_store, passkeys
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "finanzas_session"
@@ -231,7 +231,9 @@ async def privacy_headers(request, call_next):
     response.headers.update(
         {
             "Cache-Control": "no-store",
-            "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+            # publickey-credentials-* stay self-only so WebAuthn can run on this
+            # origin and nowhere else. The other features stay disabled.
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self)",
             "Cross-Origin-Opener-Policy": "same-origin",
             "Cross-Origin-Resource-Policy": "same-origin",
             "X-Content-Type-Options": "nosniff",
@@ -294,10 +296,29 @@ class Verification(BaseModel):
     code: str = Field(min_length=1, max_length=64)
 
 
+class PasskeyAssertion(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str = Field(min_length=1, max_length=2048)
+    rawId: str = Field(min_length=1, max_length=2048)
+    type: Literal["public-key"]
+    response: dict
+
+
+class PasskeyRegistration(BaseModel):
+    name: str = Field(default="", max_length=64)
+    credential: PasskeyAssertion
+
+
+class PasskeyRename(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
 @app.get("/api/auth/config")
 def auth_config():
     # Only public policy, never enrollment keys, recovery codes or state paths.
-    return {"mfa_required": auth_store.mfa_required()}
+    # Passkeys live in the same auth store as TOTP, so they follow MFA mode.
+    required = auth_store.mfa_required()
+    return {"mfa_required": required, "passkeys": required}
 
 
 def client_address(request: Request):
@@ -350,6 +371,21 @@ def session_response(data):
     response.set_cookie(COOKIE, make_token(data), max_age=TOKEN_TTL,
                         httponly=True, samesite="strict", secure=cookie_secure())
     return response
+
+
+def _memory_login_failure(ip):
+    """Demo-mode limiter, shared with password attempts. Production uses the auth store."""
+    now = time.monotonic()
+    with state_lock:
+        if _limited(ip, now):
+            raise HTTPException(429, {"key": "errors.rateLimit"})
+        attempts[ip].append(now)
+        global_attempts.append(now)
+    raise HTTPException(401, {"key": "errors.credentials"})
+
+
+def _stamp(value):
+    return None if value is None else int(value)
 
 
 @app.post("/api/login")
@@ -427,6 +463,47 @@ def cancel_login(request: Request):
     return response
 
 
+def _passkey_party(request):
+    try:
+        return passkeys.relying_party(request)
+    except auth_store.AuthStateError:
+        raise HTTPException(503, {"key": "errors.authState"})
+
+
+@app.post("/api/login/passkey/options")
+def passkey_login_options(request: Request):
+    """Unauthenticated. Starts a discoverable passkey ceremony; no username is accepted."""
+    same_origin(request)
+    ip = client_address(request)
+    if not auth_store.mfa_required():
+        _memory_login_failure(ip)
+    _origin, rp_id = _passkey_party(request)
+    options = passkeys.authentication_options(ip, rp_id)
+    if options == "limited":
+        raise HTTPException(429, {"key": "errors.rateLimit"})
+    return options
+
+
+@app.post("/api/login/passkey")
+def passkey_login(body: PasskeyAssertion, request: Request):
+    """Unauthenticated. A verified passkey is a full session, same cookie as password+TOTP."""
+    same_origin(request)
+    ip = client_address(request)
+    if not auth_store.mfa_required():
+        _memory_login_failure(ip)
+    origin, rp_id = _passkey_party(request)
+    data = {"purpose": "session", "exp": int(time.time()) + TOKEN_TTL, "nonce": secrets.token_hex(16)}
+    result = passkeys.finish_authentication(
+        body.model_dump(), ip, origin, rp_id, data["nonce"], data["exp"]
+    )
+    if result == "ok":
+        return session_response(data)
+    if result == "limited":
+        raise HTTPException(429, {"key": "errors.rateLimit"})
+    # Same body as a wrong password. Do not distinguish expired, origin, rpId or signature.
+    raise HTTPException(401, {"key": "errors.credentials"})
+
+
 @app.post("/api/logout")
 def logout(request: Request, session=Depends(auth)):
     same_origin(request)
@@ -449,6 +526,91 @@ def logout(request: Request, session=Depends(auth)):
 @app.get("/api/session")
 def session(_=Depends(auth)):
     return {"username": os.environ.get("APP_USER", "admin")}
+
+
+def _require_passkeys():
+    if not auth_store.mfa_required():
+        raise HTTPException(404, {"key": "errors.request"})
+
+
+def _public_passkey(row):
+    return {
+        "id": passkeys.credential_id_text(row["id"]),
+        "name": row["name"],
+        "created": _stamp(row["created"]),
+        "last_used": _stamp(row["last_used"]),
+    }
+
+
+def _credential_id(value):
+    raw = passkeys.credential_id_bytes(value)
+    if raw is None:
+        raise HTTPException(404, {"key": "errors.request"})
+    return raw
+
+
+@app.get("/api/passkeys")
+def get_passkeys(current=Depends(auth)):
+    _require_passkeys()
+    return {
+        "passkeys": [_public_passkey(row) for row in auth_store.list_passkeys()],
+        "can_register": auth_store.can_register_passkey(current["nonce"]),
+    }
+
+
+@app.post("/api/passkeys/options")
+def passkey_register_options(request: Request, current=Depends(auth)):
+    same_origin(request)
+    _require_passkeys()
+    origin, rp_id = _passkey_party(request)
+    options = passkeys.registration_options(
+        current["nonce"], rp_id, os.environ.get("APP_USER", "admin")
+    )
+    if options == "reauth":
+        raise HTTPException(403, {"key": "errors.reauth"})
+    if options == "full":
+        raise HTTPException(409, {"key": "errors.passkeyLimit"})
+    if options == "limited":
+        raise HTTPException(429, {"key": "errors.rateLimit"})
+    return options
+
+
+@app.post("/api/passkeys")
+def register_passkey(body: PasskeyRegistration, request: Request, current=Depends(auth)):
+    same_origin(request)
+    _require_passkeys()
+    origin, rp_id = _passkey_party(request)
+    result = passkeys.finish_registration(
+        body.credential.model_dump(), body.name, current["nonce"], origin, rp_id
+    )
+    if result == "reauth":
+        raise HTTPException(403, {"key": "errors.reauth"})
+    if result == "limited":
+        raise HTTPException(429, {"key": "errors.rateLimit"})
+    if result != "ok":
+        raise HTTPException(400, {"key": "errors.passkey"})
+    return {"ok": True}
+
+
+@app.patch("/api/passkeys/{credential_id}")
+def rename_passkey_route(credential_id: str, body: PasskeyRename, request: Request, _=Depends(auth)):
+    same_origin(request)
+    _require_passkeys()
+    name = passkeys.clean_passkey_name(body.name)
+    if name is None or not body.name.strip():
+        raise HTTPException(422, {"key": "errors.request"})
+    if not auth_store.rename_passkey(_credential_id(credential_id), name):
+        raise HTTPException(404, {"key": "errors.request"})
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/passkeys/{credential_id}")
+def delete_passkey_route(credential_id: str, request: Request, _=Depends(auth)):
+    same_origin(request)
+    _require_passkeys()
+    if not auth_store.delete_passkey(_credential_id(credential_id)):
+        raise HTTPException(404, {"key": "errors.request"})
+    return {"ok": True}
 
 
 @app.get("/api/dashboard")
