@@ -374,6 +374,60 @@ def test_unclassified_null_is_filterable_as_otros(client, db):
     assert result["rows"][0]["category"] == "Otros"
 
 
+def _png_info(data):
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    pos = 8
+    width = height = color_type = None
+    while pos + 12 <= len(data):
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        kind = data[pos + 4 : pos + 8]
+        chunk = data[pos + 8 : pos + 8 + length]
+        if kind == b"IHDR":
+            width = int.from_bytes(chunk[0:4], "big")
+            height = int.from_bytes(chunk[4:8], "big")
+            color_type = chunk[9]
+        assert kind != b"tRNS"
+        pos += 12 + length
+        if kind == b"IEND":
+            break
+    return width, height, color_type
+
+
+def test_home_screen_icons_without_login(client):
+    assert client.get("/api/dashboard").status_code == 401
+    icons = {
+        "/apple-touch-icon.png": (180, 180),
+        "/icon-192.png": (192, 192),
+        "/icon-512.png": (512, 512),
+    }
+    for path, size in icons.items():
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert _png_info(response.content) == (*size, 2)
+    favicon = client.get("/favicon.ico")
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"] == "image/x-icon"
+    assert favicon.content[:4] == b"\x00\x00\x01\x00"
+    manifest = client.get("/site.webmanifest")
+    assert manifest.status_code == 200
+    assert manifest.headers["content-type"] == "application/manifest+json"
+    body = manifest.json()
+    assert body["name"] == "Finanza"
+    assert body["short_name"] == "Finanza"
+    assert body["theme_color"] == "#174e3c"
+    assert body["background_color"] == "#f6f7f9"
+    assert {icon["src"]: icon["sizes"] for icon in body["icons"]} == {
+        "/icon-192.png": "192x192",
+        "/icon-512.png": "512x512",
+    }
+    page = client.get("/")
+    assert page.status_code == 200
+    assert 'rel="apple-touch-icon" href="/apple-touch-icon.png"' in page.text
+    assert 'rel="manifest" href="/site.webmanifest"' in page.text
+    assert 'name="apple-mobile-web-app-title" content="Finanza"' in page.text
+
+
 def test_bank_names_codes_and_new_accounts_come_from_database(client, db):
     con = sqlite3.connect(db)
     con.execute(
