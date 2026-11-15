@@ -281,6 +281,35 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+# The browser requests these when the site is saved to a home screen, before
+# any login. They only carry the existing logo and the public web manifest.
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    return FileResponse(STATIC / "apple-touch-icon.png", media_type="image/png")
+
+
+@app.get("/icon-192.png")
+def icon_192():
+    return FileResponse(STATIC / "icon-192.png", media_type="image/png")
+
+
+@app.get("/icon-512.png")
+def icon_512():
+    return FileResponse(STATIC / "icon-512.png", media_type="image/png")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(STATIC / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/site.webmanifest")
+def webmanifest():
+    return FileResponse(
+        STATIC / "site.webmanifest", media_type="application/manifest+json"
+    )
+
+
 @app.get("/healthz")
 def health():
     # No financial information and no filesystem paths in the public health check.
