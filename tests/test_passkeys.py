@@ -181,6 +181,8 @@ def test_register_rename_delete_and_passkey_login_without_username(client, enrol
     body = options.json()
     assert body["rp"] == {"name": "Finanza", "id": RP_ID}
     assert body["authenticatorSelection"]["residentKey"] == "required"
+    assert body["authenticatorSelection"]["authenticatorAttachment"] == "platform"
+    assert body["hints"] == ["client-device"]
     assert body["authenticatorSelection"]["userVerification"] == "required"
     assert body["authenticatorSelection"]["requireResidentKey"] is True
     assert body["timeout"] == store.WEBAUTHN_CHALLENGE_TTL * 1000
@@ -208,6 +210,7 @@ def test_register_rename_delete_and_passkey_login_without_username(client, enrol
     public = ceremony.json()
     assert public["rpId"] == RP_ID
     assert public["userVerification"] == "required"
+    assert public["hints"] == ["client-device"]
     assert "allowCredentials" not in public
     assert "username" not in public
     assertion = soft.authenticate(public, ORIGIN)

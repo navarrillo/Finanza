@@ -11,6 +11,9 @@
     />
     <title>Finanza</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="apple-mobile-web-app-title" content="Finanza" />
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/i18n.js" defer></script>
     <script src="/static/app.js" defer></script>
@@ -82,6 +85,7 @@
           <div id="passkey-login-block" hidden>
             <p class="login-or" data-i18n="login.or"></p>
             <button id="passkey-login" class="button" type="button" data-i18n="login.passkey"></button>
+            <p class="login-hint" data-i18n="login.passkeyHelp"></p>
           </div>
           </form>
           <form id="verification-form" hidden>

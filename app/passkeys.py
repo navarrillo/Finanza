@@ -27,6 +27,7 @@ from webauthn.helpers import (
 from webauthn.helpers.byteslike_to_bytes import byteslike_to_bytes
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
+    AuthenticatorAttachment,
     AuthenticatorSelectionCriteria,
     PublicKeyCredentialDescriptor,
     ResidentKeyRequirement,
@@ -98,6 +99,9 @@ def authentication_options(ip, rp_id):
     )
     payload = _json_options(options)
     payload.pop("allowCredentials", None)
+    # Prefer a passkey available on this device over a QR/security-key prompt.
+    # Older browsers ignore hints; existing external passkeys remain usable.
+    payload["hints"] = ["client-device"]
     return payload
 
 
@@ -117,6 +121,7 @@ def registration_options(session_nonce, rp_id, username):
         timeout=auth_store.WEBAUTHN_CHALLENGE_TTL * 1000,
         attestation=AttestationConveyancePreference.NONE,
         authenticator_selection=AuthenticatorSelectionCriteria(
+            authenticator_attachment=AuthenticatorAttachment.PLATFORM,
             resident_key=ResidentKeyRequirement.REQUIRED,
             require_resident_key=True,
             user_verification=UserVerificationRequirement.REQUIRED,
@@ -124,6 +129,7 @@ def registration_options(session_nonce, rp_id, username):
         exclude_credentials=[PublicKeyCredentialDescriptor(id=item) for item in existing],
     )
     payload = _json_options(options)
+    payload["hints"] = ["client-device"]
     if not payload.get("excludeCredentials"):
         payload.pop("excludeCredentials", None)
     return payload

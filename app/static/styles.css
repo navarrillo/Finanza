@@ -1692,6 +1692,12 @@ h1 {
   color: #929b8c;
   font-size: 11px;
 }
+.login-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 button.passkey-nav {
   width: calc(100% - 8px);
   margin: 4px 4px 8px;
